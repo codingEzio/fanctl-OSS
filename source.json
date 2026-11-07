@@ -1,0 +1,66 @@
+{
+  "schemaVersion": 1,
+  "project": "fanctl",
+  "license": "GPL-2.0-only; upstream retained terms in THIRD_PARTY_NOTICES.md",
+  "author": "codingEzio",
+  "scope": "Selected CLI source, documentation, original mark and non-privileged tests. No private workspace, credentials, helper, OS configuration or original Git history. Modified by fanctl contributors on 2026-11-07 to validate controller data, preflight targets, and attempt diagnosed, bounded best-effort automatic recovery.",
+  "files": [
+    {
+      "path": "fanctl.c",
+      "sha256": "bc0ed633eaf6111d439be0486a8ccaecca3b021dd473a19408c4020e74d65bf3"
+    },
+    {
+      "path": "tests/fanctl_test.c",
+      "sha256": "31ab12825b2128938568b5a69b49475641f032357d2e1b6abab95c82f332f7ff"
+    },
+    {
+      "path": "tests/fanctl_test.sh",
+      "sha256": "7e4f4b34b694d3c9f1c3356ef06e99512b411c8d509dbff997c793621a2dd451"
+    },
+    {
+      "path": "tests/recovery_test.c",
+      "sha256": "4d4c2a676fd0415967d30708805d227a80938d3ef83163d0647ef886d8a272bb"
+    },
+    {
+      "path": "tests/smc_result_test.c",
+      "sha256": "a2757fb1f34a828a8fbf2c05cef69261fefa70bbc1aff1f2b7352d512e06cb8f"
+    },
+    {
+      "path": "Assets/icon.svg",
+      "sha256": "4d2e03d94a07c24fd5a20cce74d613ea2c902a458a4ec4ca3b94569628c91fc5"
+    },
+    {
+      "path": "LICENSE",
+      "sha256": "ab15fd526bd8dd18a9e77ebc139656bf4d33e97fc7238cd11bf60e2b9b8666c6"
+    },
+    {
+      "path": "THIRD_PARTY_NOTICES.md",
+      "sha256": "2da912605aaf4fdeda1c7ee059549074150693fdac19d8c3a1c0430a9ed8751c"
+    },
+    {
+      "path": "README.md",
+      "sha256": "6b46633393f169406a53d66fa1ae15a6018f7019b62d13245b6fe6bda8b9276d"
+    },
+    {
+      "path": "README.zh-Hans.md",
+      "sha256": "9113678ea1a2074493db19acf36e05e2f60dbcdb593846b00cf9989ebab8dbb3"
+    },
+    {
+      "path": "README.zh-Hant.md",
+      "sha256": "e8d38e1ad591c226e8a70f0884b4779e33d20211c7ab33e0e1525682e7b7a036"
+    },
+    {
+      "path": "README.ja.md",
+      "sha256": "a364ec31a733bb4d335e55371f8e3c7480f7b7492bfea4277838891a2a9f6242"
+    },
+    {
+      "path": "README.ko.md",
+      "sha256": "fba7c05c99a773fffb2fccd08a6adadead542ba0bf4909edde5f4c7abc8724da"
+    },
+    {
+      "path": "README.es.md",
+      "sha256": "8eae885a955dc0cc9dcb0062528158986a35c41cbf78d21380f3292772e99800"
+    }
+  ],
+  "runtime": "On one Mac, identical CLI source was tested with a temporary fan target and return to automatic mode. Recovery after a write failure was only simulated; other Macs are unverified."
+}
