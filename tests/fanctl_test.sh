@@ -3,6 +3,7 @@
 # Modified on 2026-11-15: handoff, signal recovery and cached authorization.
 set -eu
 unset NO_COLOR
+unset SSH_CONNECTION SSH_CLIENT
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 temporary=$(/usr/bin/mktemp -d /private/tmp/delete_after_use_fanctl_test.XXXXXX)
 trap '/bin/rm -rf "$temporary"' EXIT HUP INT TERM
@@ -22,19 +23,24 @@ for mode in 0 1; do
     "-DFANCTL_SOURCE_INCLUDE=$include" "-DFANCTL_USE_ADJACENT_AUTHORIZER=$mode" \
     "$script_dir/fanctl_test.c" -o "$temporary/authorization-$mode"
   expected=/usr/bin/sudo
-  if [ "$mode" = 1 ]; then expected=/fixture/bin/admin_authorize; fi
+  suffix=
+  if [ "$mode" = 1 ]; then suffix=' askpass=1'; fi
   for command in stat auto max 3000; do
     output=$("$temporary/authorization-$mode" "$command")
-    test "$output" = "authorize=$expected executable=/fixture/bin/fanctl argument=$command"
+    test "$output" = "authorize=$expected executable=/fixture/bin/fanctl argument=$command$suffix"
   done
   output=$("$temporary/authorization-$mode" stat --verbose)
-  test "$output" = "authorize=$expected executable=/fixture/bin/fanctl argument=stat --verbose"
+  test "$output" = "authorize=$expected executable=/fixture/bin/fanctl argument=stat --verbose$suffix"
   output=$(NO_COLOR=1 "$temporary/authorization-$mode" 3000)
-  test "$output" = "authorize=$expected executable=/fixture/bin/fanctl argument=3000 --no-color"
+  test "$output" = "authorize=$expected executable=/fixture/bin/fanctl argument=3000 --no-color$suffix"
+  output=$("$temporary/authorization-$mode" stat --non-interactive)
+  test "$output" = 'authorize=/usr/bin/sudo executable=/fixture/bin/fanctl argument=stat --non-interactive noninteractive=1'
   if "$temporary/authorization-$mode" 3000 --verbose > "$temporary/invalid-option" 2>&1; then exit 1; fi
   if [ "$mode" = 1 ]; then
     output=$(FANCTL_TEST_CACHED=1 "$temporary/authorization-$mode" 3000)
     test "$output" = 'authorize=/usr/bin/sudo executable=/fixture/bin/fanctl argument=3000 noninteractive=1'
+    output=$(SSH_CONNECTION=fixture "$temporary/authorization-$mode" stat)
+    test "$output" = 'authorize=/fixture/bin/admin_authorize executable=/fixture/bin/fanctl argument=stat'
     if FANCTL_TEST_CACHE_PROBE_ERROR=1 "$temporary/authorization-$mode" 3000 > "$temporary/cache-error" 2>&1; then exit 1; fi
     grep -q 'Cannot check cached administrator access' "$temporary/cache-error"
   fi

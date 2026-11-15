@@ -33,16 +33,22 @@ static pid_t fake_waitpid(pid_t child, int *status, int options) {
 #endif
 static int fake_execv(const char *path, char *const arguments[]) {
     if (getenv("FANCTL_TEST_EXEC_FAIL")) { errno = ENOENT; return -1; }
-    int executable = arguments[1] && strcmp(arguments[1], "-n") == 0 ? 2 : 1;
+    bool no_prompt = arguments[1] && strcmp(arguments[1], "-n") == 0;
+    bool askpass = arguments[1] && strcmp(arguments[1], "-A") == 0;
+    int executable = no_prompt || askpass ? 2 : 1;
     if (!arguments[0] || !arguments[executable] || !arguments[executable + 1] ||
         strcmp(arguments[0], path) || strcmp(arguments[executable], "/fixture/bin/fanctl")) _Exit(81);
     printf("authorize=%s executable=%s argument=%s", path, arguments[executable], arguments[executable + 1]);
     for (int index = executable + 2; arguments[index]; index++) {
-        if (strcmp(arguments[index], "--no-color") &&
+        if (strcmp(arguments[index], "--no-color") && strcmp(arguments[index], "--non-interactive") &&
             (strcmp(arguments[executable + 1], "stat") || strcmp(arguments[index], "--verbose"))) _Exit(81);
         printf(" %s", arguments[index]);
     }
-    printf("%s\n", executable == 2 ? " noninteractive=1" : "");
+    if (askpass && (!getenv("SUDO_ASKPASS") ||
+        strcmp(getenv("SUDO_ASKPASS"), "/fixture/bin/admin_authorize") ||
+        !getenv("ADMIN_AUTHORIZE_ASKPASS_SCOPE") ||
+        strcmp(getenv("ADMIN_AUTHORIZE_ASKPASS_SCOPE"), "fanctl"))) _Exit(81);
+    printf("%s\n", no_prompt ? " noninteractive=1" : askpass ? " askpass=1" : "");
     fflush(stdout);
     _Exit(0);
 }

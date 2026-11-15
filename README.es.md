@@ -23,7 +23,7 @@ fanctl auto       # hand control back to macOS
 🌀 Fan 2   1200 →  3002 RPM
 ```
 
-La terminal interactiva muestra un indicador de progreso, un icono de ventilador y color. La salida redirigida es texto sin animación. `NO_COLOR` / `--no-color` desactiva el color; `TERM=dumb` desactiva los adornos. Reducir movimiento de macOS para el usuario conectado desactiva la animación. La CLI sigue en inglés.
+La terminal interactiva muestra un indicador de progreso, un icono de ventilador y color. La salida redirigida es texto sin animación. `NO_COLOR` / `--no-color` desactiva el color; `TERM=dumb` desactiva los adornos. Reducir movimiento de macOS para el usuario conectado desactiva la animación. La CLI sigue en inglés. Para automatización, `--non-interactive` prohíbe pedir contraseña y falla si no hay autorización.
 
 La cesión de control se comprueba hasta 30 segundos, tratando todos los ventiladores juntos. Solo se reintenta la respuesta conocida de modo protegido (`0x82`); los demás errores de escritura siguen siendo fallos. El modo `3` es automático del sistema, no manual. Se observan las RPM hasta ocho segundos; los valores finales son mediciones y un objetivo manual aún no alcanzado se indica aparte. Al recibir `SIGINT` / `SIGTERM` durante un cambio, intenta recuperar y verificar el modo automático antes de salir. La señal debe llegar a fanctl; detener solo el intermediario de autorización no es una vía de cancelación verificada.
 
@@ -40,7 +40,7 @@ sh tests/fanctl_test.sh
 
 ## Permisos y estado
 
-La compilación independiente usa `/usr/bin/sudo` para comandos SMC, incluido `stat`. La del propietario comprueba primero la caché de sudo sin pedir contraseña. Si sigue válida, usa sudo no interactivo; de lo contrario, usa su helper adyacente existente. No guarda contraseñas ni cambia la política de sudo. `--help` y los argumentos inválidos no piden acceso. La opción de compilación `FANCTL_USE_ADJACENT_AUTHORIZER` es `0` por defecto y `1` para el instalador del propietario; otros valores impiden compilar. Si falta el helper elegido, falla de forma visible sin cambiar de vía.
+La compilación independiente usa `/usr/bin/sudo` para comandos SMC, incluido `stat`. La del propietario comprueba primero la caché de sudo sin pedir contraseña. Si sigue válida, usa sudo no interactivo; de lo contrario, las solicitudes locales usan `sudo -A` con el helper nativo adyacente como askpass para crear la caché normal. SSH entrante conserva el flujo de terminal del helper. No guarda contraseñas ni cambia la política de sudo. `--help` y los argumentos inválidos no piden acceso. La opción de compilación `FANCTL_USE_ADJACENT_AUTHORIZER` es `0` por defecto y `1` para el instalador del propietario; otros valores impiden compilar. Si falta el helper elegido, falla de forma visible sin cambiar de vía. La reutilización sigue la política de sesiones de sudo; otra terminal puede necesitar su propia autorización.
 
 Sale después de cada comando. El objetivo forzado sigue hasta que `auto`, macOS u otro controlador lo cambie. No instala daemon, inicio automático, perfiles guardados ni telemetría. La compatibilidad depende de las claves AppleSMC del Mac; no afirma aceptación en todos los modelos.
 

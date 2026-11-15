@@ -874,7 +874,8 @@ static void usage(void) {
          "  fanctl stat [--verbose]\n"
          "\n"
          "Options:\n"
-         "  --no-color  Disable color (also: NO_COLOR)");
+         "  --no-color         Disable color (also: NO_COLOR)\n"
+         "  --non-interactive  Never open a password prompt");
 }
 
 // Standalone builds use system sudo. The managed owner build explicitly keeps
@@ -909,6 +910,10 @@ static bool cached_authorization(void) {
 #endif
 
 static void run_elevated(int argc, char *argv[]) {
+    bool noninteractive = false;
+    for (int index = 2; index < argc; index++) {
+        if (strcmp(argv[index], "--non-interactive") == 0) noninteractive = true;
+    }
     char executable[PATH_MAX];
     char resolved[PATH_MAX];
     uint32_t size = sizeof(executable);
@@ -924,16 +929,29 @@ static void run_elevated(int argc, char *argv[]) {
         fail("Cannot locate the configured administrator helper");
     }
     bool cached = cached_authorization();
-    const char *selected_authorizer = cached ? "/usr/bin/sudo" : authorizer;
+    const char *ssh_connection = getenv("SSH_CONNECTION");
+    const char *ssh_client = getenv("SSH_CLIENT");
+    bool incoming_ssh = (ssh_connection && ssh_connection[0]) || (ssh_client && ssh_client[0]);
+    bool askpass = !cached && !noninteractive && !incoming_ssh;
+    if (askpass && (setenv("SUDO_ASKPASS", authorizer, 1) != 0 ||
+        setenv("ADMIN_AUTHORIZE_ASKPASS_SCOPE", "fanctl", 1) != 0)) {
+        fail("Cannot configure native administrator authorization");
+    }
+    /* Askpass lets sudo create its normal credential timestamp. Executing
+       through the command helper would use -k and deliberately suppress it. */
+    const char *selected_authorizer = cached || noninteractive || askpass ?
+        "/usr/bin/sudo" : authorizer;
 #else
     bool cached = false;
+    bool askpass = false;
     const char *selected_authorizer = "/usr/bin/sudo";
 #endif
 
     char *authorize_args[argc + 4];
     int next = 0;
     authorize_args[next++] = (char *)selected_authorizer;
-    if (cached) authorize_args[next++] = "-n";
+    if (cached || noninteractive) authorize_args[next++] = "-n";
+    else if (askpass) authorize_args[next++] = "-A";
     authorize_args[next++] = resolved;
     bool has_no_color = false;
     for (int index = 1; index < argc; index++) {
@@ -970,6 +988,7 @@ int main(int argc, char *argv[]) {
     for (int index = 2; index < argc; index++) {
         if (strcmp(argv[index], "--no-color") == 0) no_color = true;
         else if (want_stat && strcmp(argv[index], "--verbose") == 0) verbose = true;
+        else if (strcmp(argv[index], "--non-interactive") == 0) continue;
         else { usage(); return EXIT_FAILURE; }
     }
 

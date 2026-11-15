@@ -3,19 +3,19 @@
   "project": "fanctl",
   "license": "GPL-2.0-only; upstream retained terms in THIRD_PARTY_NOTICES.md",
   "author": "codingEzio",
-  "scope": "Selected CLI source, documentation, original mark and non-privileged tests. No private workspace, credentials, helper, OS configuration or original Git history. Modified by fanctl contributors on 2026-11-07 to validate controller data, preflight targets, and attempt diagnosed, bounded best-effort automatic recovery. Modified on 2026-11-15 to wait for thermal-manager handoff, recognize system-controlled automatic mode, and show measured before/after RPM with bounded terminal progress, signal recovery and existing sudo-cache reuse without password storage.",
+  "scope": "Selected CLI source, documentation, original mark and non-privileged tests. No private workspace, credentials, helper, OS configuration or original Git history. Modified by fanctl contributors on 2026-11-07 to validate controller data, preflight targets, and attempt diagnosed, bounded best-effort automatic recovery. Modified on 2026-11-15 to wait for thermal-manager handoff, recognize system-controlled automatic mode, and show measured before/after RPM with bounded terminal progress, signal recovery and existing sudo-cache reuse without password storage. Modified to create the system cache through native sudo askpass and support strictly noninteractive authorization.",
   "files": [
     {
       "path": "fanctl.c",
-      "sha256": "733c2945963988ec77bfad4e125329280c6e96c4f31fb92933ddda606ee0395c"
+      "sha256": "49fdfb786cb88669c97915f11befcca2d17c1bf25705389f40d33a83363e8061"
     },
     {
       "path": "tests/fanctl_test.c",
-      "sha256": "6683b4a5888b2b51e964f53ea1f4635e3140e7f7e2b9dec58ada3a738aff238d"
+      "sha256": "7163f2a76c3cb30e2eb0ba669463b4bd36fc5f1bb8e3465c4a3bcf1cf6b044c9"
     },
     {
       "path": "tests/fanctl_test.sh",
-      "sha256": "1511907a51526c4b2379fd8caac98f756759b0a152949e0c5fa7e70ee6f2854f"
+      "sha256": "574f3863b262cf26e9993aaecf08c989b78ac51ef88868446f77b3ab7c558f5a"
     },
     {
       "path": "tests/recovery_test.c",
@@ -39,27 +39,27 @@
     },
     {
       "path": "README.md",
-      "sha256": "9a61cb8f79b45efec19bb4caeaf6d81a8c50388da6499dca13a4f253fd8c3569"
+      "sha256": "67e557f44c3f8fd34db9515dba663ffbcd4f70d2f2944ddf50e56c25eb6aa9ab"
     },
     {
       "path": "README.zh-Hans.md",
-      "sha256": "5cfe58c14cbf47a202243fe0266259ac662b0875e68a853835cfcdc338487586"
+      "sha256": "868c9800771c34c1277a472b83ad137f31e26a075551e0a37d20909cb401caa7"
     },
     {
       "path": "README.zh-Hant.md",
-      "sha256": "e7d64f932f15e06ef701650f806d9eda5db8adacab744f623d88105960f7612e"
+      "sha256": "54bdcdf49643fc5915fb772e6a106bbd99bf324340734e0028f2344e5de72233"
     },
     {
       "path": "README.ja.md",
-      "sha256": "56fee26f425a78556fd43a699cf6ee9a89187ac5347ad2be45c341c6451928d9"
+      "sha256": "096e49d5a68016179c7fd1ce9dc92fe845c0eb52113628dd66579929d78242e1"
     },
     {
       "path": "README.ko.md",
-      "sha256": "ec3510dac8289269e3c752eb6834b65a2d1bea8232f7931fcf2a3839b748c94f"
+      "sha256": "12c37edd41f74a8c9b5c25dd08e4d908bad5ec41c4552f9b28887e7106d910c6"
     },
     {
       "path": "README.es.md",
-      "sha256": "e2d57c7cc6ebf45c359e2f4e62f7f9ea77d7b1f4128f5f471d778599103f08ce"
+      "sha256": "ae4973b3a390e1e8dcea288a2537255853978141ee41dddb0e41831ae0ac4d59"
     }
   ],
   "runtime": "On one Mac, identical CLI source was tested with a temporary fan target and return to automatic mode. Recovery after a write failure was only simulated; other Macs are unverified."
