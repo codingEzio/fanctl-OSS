@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-only
  * Copyright (C) 2026 fanctl contributors.
  * Synthetic controller state: real IOKit access is forbidden.
+ * Modified on 2026-11-15: asynchronous handoff, idempotent Auto and signal recovery.
  */
 #include <CoreFoundation/CoreFoundation.h>
 #include <IOKit/IOKitLib.h>
@@ -26,6 +27,8 @@ static bool pending_mode0;
 static bool pending_mode1;
 static bool verification_phase;
 static bool delay_first_mode_read;
+static bool target_before_handoff;
+static bool pending_test_enable;
 static _Noreturn void fake_exit(int status) { exit_status = status; longjmp(stopped, 1); }
 static int fake_sleep(useconds_t duration) { (void)duration; sleeps++; return 0; }
 static kern_return_t fake_smc(io_connect_t, uint32_t, const void *, size_t, void *, size_t *);
@@ -117,6 +120,11 @@ static kern_return_t fake_smc(io_connect_t connection, uint32_t selector,
         output->key_info.data_type = key_code(is_case("type-changed") &&
             strcmp(key->name, "F0Md") == 0 && mode0_metadata_reads == 3 ? "flag" : key->type);
     } else if (input->data8 == kSMCCommandReadBytes) {
+        if (is_case("cancel-delayed-unlock") && strcmp(key->name, "Ftst") == 0 &&
+            pending_test_enable && sleeps >= 12) {
+            key->bytes[0] = 1;
+            pending_test_enable = false;
+        }
         memcpy(output->bytes, key->bytes, key->size);
         if (verification_phase && strcmp(key->name, "F0Md") == 0 &&
             (is_case("persistent-nonzero") || (is_case("delayed-auto") && delay_first_mode_read))) {
@@ -125,6 +133,39 @@ static kern_return_t fake_smc(io_connect_t connection, uint32_t selector,
         }
     } else if (input->data8 == kSMCCommandWriteBytes) {
         writes++;
+        if (is_case("auto-system-race") && strcmp(key->name, "F0Md") == 0 && input->bytes[0] == 0) {
+            keys[kMode0].bytes[0] = 3;
+            output->result = kSMCWriteProtected; return KERN_SUCCESS;
+        }
+        if (is_case("cancel-delayed-unlock") && strcmp(key->name, "Ftst") == 0 && input->bytes[0] == 1) {
+            pending_test_enable = true;
+            return KERN_SUCCESS;
+        }
+        if ((is_case("cancel-handoff") || is_case("cancel-delayed-unlock")) &&
+            strcmp(key->name, "F0Md") == 0 && input->bytes[0] == 1) {
+            interrupted = SIGINT;
+            output->result = kSMCWriteProtected; return KERN_SUCCESS;
+        }
+        if (is_case("cancel-handoff") &&
+            (strcmp(key->name, "F0Md") == 0 || strcmp(key->name, "F1Md") == 0) &&
+            input->bytes[0] == 0 && key->bytes[0] == 0) {
+            output->result = kSMCWriteProtected; return KERN_SUCCESS;
+        }
+        if (strcmp(key->name, "F0Md") == 0 && input->bytes[0] == 1) {
+            if (is_case("mode-other-error")) { output->result = 1; return KERN_SUCCESS; }
+            if (is_case("protected-timeout") || (is_case("protected-handoff") && sleeps < 12)) {
+                output->result = kSMCWriteProtected; return KERN_SUCCESS;
+            }
+            if (is_case("delayed-handoff") && sleeps < 12) return KERN_SUCCESS;
+        }
+        if ((is_case("protected-handoff") || is_case("delayed-handoff") ||
+                is_case("protected-timeout")) &&
+            (strcmp(key->name, "F0Tg") == 0 || strcmp(key->name, "F1Tg") == 0) &&
+            (keys[kMode0].bytes[0] != 1 ||
+                (strcmp(key->name, "F1Tg") == 0 && keys[kMode1].bytes[0] != 1))) {
+            target_before_handoff = true;
+        }
+        if (is_case("target-timeout") && strcmp(key->name, "F0Tg") == 0) return KERN_SUCCESS;
         if ((is_case("partial-recovery") || is_case("auto-partial")) &&
             strcmp(key->name, "F0Md") == 0 && input->bytes[0] == 0) return KERN_FAILURE;
         if (is_case("recovery-smc-error") && strcmp(key->name, "F0Md") == 0 &&
@@ -196,6 +237,13 @@ int main(int argc, char **argv) {
     if (is_case("auto-optional-missing")) {
         keys[kMode0].bytes[0] = 1; keys[kMode1].bytes[0] = 1;
     }
+    if (is_case("protected-handoff") || is_case("delayed-handoff") ||
+        is_case("protected-timeout") || is_case("mode-other-error") || is_case("auto-system")) {
+        keys[kMode0].bytes[0] = 3; keys[kMode1].bytes[0] = 3;
+    }
+    if (is_case("auto-system-race")) {
+        keys[kMode0].bytes[0] = 1; keys[kMode1].bytes[0] = 3;
+    }
     if (is_case("invalid-fan-count") || is_case("fractional-fan-count")) {
         float count = is_case("invalid-fan-count") ? NAN : 1.5f;
         keys[kFanCount].type = "flt "; keys[kFanCount].size = sizeof(count);
@@ -226,7 +274,8 @@ int main(int argc, char **argv) {
         if (is_case("auto-partial") || is_case("auto-success") ||
             is_case("deferred-auto") || is_case("prewrite-handshake") || is_case("recovery-smc-error") ||
             is_case("delayed-auto") || is_case("persistent-nonzero") || is_case("verification-key-vanishes") ||
-            is_case("auto-optional-missing") || is_case("invalid-fan-count") ||
+            is_case("auto-optional-missing") || is_case("auto-system") || is_case("auto-system-race") ||
+            is_case("invalid-fan-count") ||
             is_case("fractional-fan-count") || is_case("large-fan-count") ||
             is_case("auto-fs-format") || is_case("short-auto")) restore_auto(0);
         else if (is_case("invalid-mode") || is_case("invalid-actual")) (void)read_fan(0, 0);
@@ -237,6 +286,25 @@ int main(int argc, char **argv) {
     if (is_case("success")) {
         pass = exit_status == 0 && state(1, 3, 1, 1) &&
             keys[kTarget0].bytes[0] == 0x27 && keys[kTarget1].bytes[0] == 0x27;
+    } else if (is_case("protected-handoff") || is_case("delayed-handoff")) {
+        pass = exit_status == 0 && state(1, 3, 1, 1) && sleeps == 12 && !target_before_handoff &&
+            keys[kTarget0].bytes[0] == 0x27 && keys[kTarget1].bytes[0] == 0x27;
+    } else if (is_case("protected-timeout")) {
+        pass = exit_status == EXIT_FAILURE && state(0, 0, 3, 0) &&
+            sleeps == kModeAttempts - 1 && !target_before_handoff;
+    } else if (is_case("mode-other-error")) {
+        pass = exit_status == EXIT_FAILURE && state(0, 0, 3, 3) && sleeps == 0;
+    } else if (is_case("auto-system")) {
+        pass = exit_status == 0 && state(0, 0, 3, 3) && writes == 0;
+    } else if (is_case("auto-system-race")) {
+        pass = exit_status == 0 && state(0, 0, 3, 3);
+    } else if (is_case("cancel-handoff")) {
+        pass = exit_status == 128 + SIGINT && state(0, 0, 0, 0) && sleeps <= 1;
+    } else if (is_case("cancel-delayed-unlock")) {
+        pass = exit_status == 128 + SIGINT && state(0, 0, 0, 0) &&
+            !pending_test_enable && sleeps == 12;
+    } else if (is_case("target-timeout")) {
+        pass = exit_status == EXIT_FAILURE && state(0, 0, 0, 0);
     } else if (is_case("max-success")) {
         pass = exit_status == 0 && state(1, 3, 1, 1) &&
             keys[kTarget0].bytes[0] == 0x5d && keys[kTarget1].bytes[0] == 0x55;
@@ -246,7 +314,8 @@ int main(int argc, char **argv) {
     } else if (is_case("delayed-auto")) {
         pass = exit_status == 0 && state(0, 0, 0, 0) && writes == 4 && sleeps == 1;
     } else if (is_case("persistent-nonzero")) {
-        pass = exit_status == EXIT_FAILURE && state(0, 0, 0, 0) && writes == 4 && sleeps == 7;
+        pass = exit_status == EXIT_FAILURE && state(0, 0, 0, 0) && writes == 4 &&
+            sleeps == kModeAttempts - 1;
     } else if (is_case("verification-key-vanishes")) {
         pass = exit_status == EXIT_FAILURE && state(0, 3, 0, 0) && writes == 3 && sleeps == 1;
     } else if (is_case("force-optional-missing")) {

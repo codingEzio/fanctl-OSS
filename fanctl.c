@@ -4,6 +4,7 @@
 // Credits also retain Hendrik Holtmann and park-jemin; see THIRD_PARTY_NOTICES.md.
 // Modified by fanctl contributors on 2026-11-07: preflight, diagnostic and
 // best-effort automatic-mode recovery when a forced fan change fails.
+// Modified on 2026-11-15: wait for thermal-manager handoff and recognize system mode.
 
 #include <CoreFoundation/CoreFoundation.h>
 #include <IOKit/IOKitLib.h>
@@ -11,6 +12,7 @@
 #include <mach-o/dyld.h>
 #include <mach/mach.h>
 #include <math.h>
+#include <signal.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -79,7 +81,12 @@ enum {
     kSMCCommandReadKeyInfo = 9,
     kSMCSuccess = 0,
     kSMCKeyNotFound = 132,
+    kSMCWriteProtected = 130,
     kTargetTolerance = 25,
+    /* Thermal-manager handoff is asynchronous; use the researched 30s bound. */
+    kModeAttempts = 120,
+    kModePollMicroseconds = 250000,
+    kSpeedAttempts = 32, /* Observe motor response for at most eight seconds. */
 };
 
 typedef struct {
@@ -87,22 +94,64 @@ typedef struct {
     bool attempted;
     bool touched_force_bits;
     bool touched_test_mode;
+    bool pending_test_mode;
     io_connect_t connection;
     int count;
 } ForceRecovery;
 static ForceRecovery force_recovery;
+static volatile sig_atomic_t interrupted;
+static bool terminal_output;
+static bool color_output;
+static bool animate_progress;
+static bool progress_visible;
+
+static void progress_clear(void) {
+    if (progress_visible) {
+        fputs("\r\033[2K", stderr);
+        fflush(stderr);
+        progress_visible = false;
+    }
+}
+
+static void progress_note(const char *phase) {
+    if (!animate_progress) return;
+    static const char *frames[] = {"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"};
+    struct timespec now = {0};
+    (void)clock_gettime(CLOCK_MONOTONIC, &now);
+    unsigned int frame = (unsigned int)(now.tv_nsec / 125000000L);
+    fprintf(stderr, "\r\033[2K🌀 %s %s", frames[frame], phase);
+    fflush(stderr);
+    progress_visible = true;
+}
+
+static void handle_signal(int number) { interrupted = number; }
+
+static bool reduce_motion(void) {
+    const char *name = getenv("SUDO_USER");
+    CFStringRef user = name ? CFStringCreateWithCString(NULL, name, kCFStringEncodingUTF8) : NULL;
+    CFPropertyListRef value = CFPreferencesCopyValue(CFSTR("reduceMotion"),
+        CFSTR("com.apple.universalaccess"), user ? user : kCFPreferencesCurrentUser,
+        kCFPreferencesAnyHost);
+    bool enabled = value && CFGetTypeID(value) == CFBooleanGetTypeID() &&
+        CFBooleanGetValue((CFBooleanRef)value);
+    if (value) CFRelease(value);
+    if (user) CFRelease(user);
+    return enabled;
+}
 
 static bool restore_fans_best_effort(io_connect_t connection, int count,
     bool require_force_bits, bool require_test_mode);
 static void fail(const char *message) __attribute__((noreturn));
 
 static void fail(const char *message) {
+    progress_clear();
     fprintf(stderr, "fanctl: %s\n", message);
     if (force_recovery.armed && force_recovery.attempted) {
         force_recovery.armed = false;
         bool restored = restore_fans_best_effort(force_recovery.connection,
             force_recovery.count, force_recovery.touched_force_bits,
             force_recovery.touched_test_mode);
+        progress_clear();
         if (restored) {
             fputs("fanctl: automatic mode verified after the failed change\n", stderr);
         } else {
@@ -110,7 +159,11 @@ static void fail(const char *message) {
                 stderr);
         }
     }
-    exit(EXIT_FAILURE);
+    exit(interrupted ? 128 + interrupted : EXIT_FAILURE);
+}
+
+static void check_interrupted(void) {
+    if (interrupted) fail("Cancelled");
 }
 
 static void fail_code(const char *action, kern_return_t code) {
@@ -260,7 +313,7 @@ static bool try_read_key(io_connect_t connection, const char key[4], SMCValue *v
     return true;
 }
 
-static void write_key(io_connect_t connection, const SMCValue *value) {
+static uint8_t write_key_result(io_connect_t connection, const SMCValue *value) {
     SMCValue existing = read_key(connection, value->key);
     if (existing.size != value->size) {
         fail("SMC key data-size mismatch");
@@ -280,14 +333,20 @@ static void write_key(io_connect_t connection, const SMCValue *value) {
         force_recovery.attempted = true;
         if (memcmp(value->key, "FS! ", 4) == 0) force_recovery.touched_force_bits = true;
         if (memcmp(value->key, "Ftst", 4) == 0) force_recovery.touched_test_mode = true;
+        if (memcmp(value->key, "Ftst", 4) == 0 && value->bytes[0] == 1) {
+            force_recovery.pending_test_mode = true;
+        }
     }
     kern_return_t result = smc_call(connection, &input, &output);
     if (result != KERN_SUCCESS) {
         fail_code("Cannot write SMC key", result);
     }
-    if (output.result != kSMCSuccess) {
-        fail_smc_result("Cannot write SMC key", output.result);
-    }
+    return output.result;
+}
+
+static void write_key(io_connect_t connection, const SMCValue *value) {
+    uint8_t result = write_key_result(connection, value);
+    if (result != kSMCSuccess) fail_smc_result("Cannot write SMC key", result);
 }
 
 typedef enum { kRecoveryReadOK, kRecoveryReadMissing, kRecoveryReadError } RecoveryRead;
@@ -340,7 +399,7 @@ static RecoveryRead recovery_read_key(io_connect_t connection, const char key[4]
     return kRecoveryReadOK;
 }
 
-static bool recovery_write_key(io_connect_t connection, const SMCValue *value) {
+static bool recovery_write_key(io_connect_t connection, const SMCValue *value, bool fan_mode) {
     /* Match the established writer's second metadata/read before every write. */
     SMCValue existing = {0};
     if (recovery_read_key(connection, value->key, &existing) != kRecoveryReadOK ||
@@ -361,6 +420,12 @@ static bool recovery_write_key(io_connect_t connection, const SMCValue *value) {
         return false;
     }
     if (output.result != kSMCSuccess) {
+        if (fan_mode && output.result == kSMCWriteProtected) {
+            SMCValue readback = {0};
+            if (recovery_read_key(connection, value->key, &readback) == kRecoveryReadOK &&
+                has_format(&readback, "ui8 ", 1) &&
+                (readback.bytes[0] == 0 || readback.bytes[0] == 3)) return true;
+        }
         fprintf(stderr, "fanctl: %.4s write SMC result: 0x%02x\n", value->key,
             (unsigned int)output.result);
         return false;
@@ -374,6 +439,7 @@ typedef struct {
     bool optional;
     bool required;
     bool seen;
+    bool fan_mode;
 } RecoveryKey;
 
 static bool recovery_write_zero(io_connect_t connection, RecoveryKey *entry) {
@@ -386,8 +452,16 @@ static bool recovery_write_zero(io_connect_t connection, RecoveryKey *entry) {
         fprintf(stderr, "fanctl: cannot restore key %.4s\n", entry->key);
         return false;
     }
+    /* Mode 3 already belongs to the system and rejects mode writes with 0x82.
+       Global overrides are still cleared and verified before recovery succeeds. */
+    if (entry->fan_mode && value.bytes[0] == 3) return true;
+    bool zero = true;
+    for (size_t index = 0; index < entry->zero_bytes; index++) {
+        if (value.bytes[index] != 0) zero = false;
+    }
+    if (zero && (entry->fan_mode || !entry->required)) return true;
     memset(value.bytes, 0, entry->zero_bytes);
-    return recovery_write_key(connection, &value);
+    return recovery_write_key(connection, &value, entry->fan_mode);
 }
 
 typedef enum { kVerifyZero, kVerifyPending, kVerifyError } RecoveryVerify;
@@ -403,10 +477,12 @@ static RecoveryVerify recovery_verify_zero(io_connect_t connection, RecoveryKey 
     const char *type = entry->zero_bytes == 2 ? "ui16" : "ui8 ";
     bool format_ok = status == kRecoveryReadOK && has_format(&readback, type, entry->zero_bytes);
     bool zero = format_ok;
+    if (format_ok && entry->fan_mode && readback.bytes[0] == 3) return kVerifyZero;
     for (size_t index = 0; zero && index < entry->zero_bytes; index++) {
         if (readback.bytes[index] != 0) zero = false;
     }
     if (zero) return kVerifyZero;
+    if (format_ok && attempt < kModeAttempts) return kVerifyPending;
     struct timespec timestamp = {0};
     (void)clock_gettime(CLOCK_MONOTONIC, &timestamp);
     fprintf(stderr, "fanctl: %.4s verify attempt %d: status=%d type=%.4s size=%zu "
@@ -432,6 +508,7 @@ static bool restore_fans_best_effort(io_connect_t connection, int count,
         const char key[4] = {'F', (char)('0' + number), 'M', 'd'};
         memcpy(keys[total].key, key, 4);
         keys[total].zero_bytes = 1;
+        keys[total].fan_mode = true;
         keys[total++].required = true;
     }
     memcpy(keys[total].key, "Ftst", 4);
@@ -439,17 +516,38 @@ static bool restore_fans_best_effort(io_connect_t connection, int count,
     keys[total].optional = true;
     keys[total++].required = require_test_mode;
     bool success = true;
+    /* An accepted Ftst=1 write can still read as zero for several seconds.
+       Drain that pending transition before clearing it, so a late enable cannot
+       land after recovery has already reported automatic mode. */
+    if (force_recovery.pending_test_mode) {
+        bool acknowledged = false;
+        for (int attempt = 0; attempt < kModeAttempts; attempt++) {
+            progress_note("Restoring Auto");
+            SMCValue value = {0};
+            if (recovery_read_key(connection, "Ftst", &value) != kRecoveryReadOK ||
+                !has_format(&value, "ui8 ", 1)) break;
+            if (value.bytes[0] == 1) { acknowledged = true; break; }
+            if (value.bytes[0] != 0) break;
+            if (attempt + 1 < kModeAttempts) usleep(kModePollMicroseconds);
+        }
+        force_recovery.pending_test_mode = false;
+        if (!acknowledged) {
+            fputs("fanctl: pending control handoff could not be confirmed before recovery\n", stderr);
+            success = false;
+        }
+    }
     /* Attempt every reset before verification: some controllers apply a mode
-       only after all control keys have been cleared. A failed write remains a
-       failure even when the final read happens to show zero. */
+       only after all control keys have been cleared. Transport and unexpected
+       SMC write failures remain failures even when the final read shows zero. */
     for (size_t index = 0; index < total; index++) {
         if (!recovery_write_zero(connection, &keys[index])) success = false;
     }
     bool verified = false;
-    /* Reuse the target-settling window; only a valid nonzero value is retried.
+    /* Reuse the thermal-handoff window; only a valid nonzero value is retried.
        Missing/invalid reads or failed writes return promptly for fallback. */
-    int attempts = success ? 8 : 1;
+    int attempts = success ? kModeAttempts : 1;
     for (int attempt = 1; attempt <= attempts; attempt++) {
+        progress_note("Returning to Auto");
         bool all_zero = true;
         bool error = false;
         for (size_t index = 0; index < total; index++) {
@@ -563,6 +661,7 @@ static void set_optional_byte(io_connect_t connection, const char key[4], uint8_
     SMCValue value;
     if (try_read_key(connection, key, &value)) {
         if (!has_format(&value, "ui8 ", 1)) fail("Unsupported optional byte key format");
+        if (value.bytes[0] == byte) return;
         value.bytes[0] = byte;
         write_key(connection, &value);
     } else if (expected) fail("Previously detected optional byte key disappeared");
@@ -572,19 +671,37 @@ static void set_optional_force_bits(io_connect_t connection, uint16_t bits, bool
     SMCValue value;
     if (try_read_key(connection, "FS! ", &value)) {
         if (!has_format(&value, "ui16", 2)) fail("Unsupported global force key format");
+        if (unsigned_value(&value) == bits) return;
         value.bytes[0] = (uint8_t)(bits >> 8);
         value.bytes[1] = (uint8_t)bits;
         write_key(connection, &value);
     } else if (expected) fail("Previously detected global force key disappeared");
 }
 
-static void set_mode(io_connect_t connection, int number, int mode) {
-    SMCValue value = read_fan_key(connection, number, "Md");
-    if (!has_format(&value, "ui8 ", 1)) {
-        fail("Unsupported fan mode key format");
+static void set_manual_modes(io_connect_t connection, const FanState *fans, int count) {
+    int attempts = force_recovery.touched_test_mode ? kModeAttempts : 1;
+    for (int attempt = 0; attempt < attempts; attempt++) {
+        check_interrupted();
+        progress_note("Taking control");
+        bool all_manual = true;
+        for (int index = 0; index < count; index++) {
+            SMCValue value = read_fan_key(connection, fans[index].number, "Md");
+            if (!has_format(&value, "ui8 ", 1)) fail("Unsupported fan mode key format");
+            if (value.bytes[0] == 1) continue;
+            value.bytes[0] = 1;
+            uint8_t result = write_key_result(connection, &value);
+            if (result != kSMCSuccess && !(result == kSMCWriteProtected && attempts > 1)) {
+                fail_smc_result("Cannot write fan mode", result);
+            }
+            SMCValue readback = read_fan_key(connection, fans[index].number, "Md");
+            if (!has_format(&readback, "ui8 ", 1)) fail("Unsupported fan mode key format");
+            if (result != kSMCSuccess || readback.bytes[0] != 1) all_manual = false;
+        }
+        if (all_manual) return;
+        if (attempt + 1 < attempts) usleep(kModePollMicroseconds);
     }
-    value.bytes[0] = (uint8_t)mode;
-    write_key(connection, &value);
+    fail(attempts > 1 ? "macOS did not release fan control within 30 seconds" :
+        "Manual fan mode could not be verified");
 }
 
 static SMCValue encoded_target(io_connect_t connection, int number, int rpm) {
@@ -606,29 +723,6 @@ static SMCValue encoded_target(io_connect_t connection, int number, int rpm) {
     fail("Unsupported fan target data type");
 }
 
-static void set_fan(io_connect_t connection, const FanState *fan, int rpm,
-    const SMCValue *target) {
-    if ((float)rpm < fan->minimum || (float)rpm > fan->maximum) {
-        char message[160];
-        snprintf(message, sizeof(message), "Fan %d RPM must be between %.0f and %.0f",
-            fan->number, fan->minimum, fan->maximum);
-        fail(message);
-    }
-
-    set_mode(connection, fan->number, 1);
-    write_key(connection, target);
-    set_mode(connection, fan->number, 1);
-
-    for (int attempt = 0; attempt < 8; attempt++) {
-        usleep(250000);
-        SMCValue readback = read_fan_key(connection, fan->number, "Tg");
-        if (fabsf(numeric_value(&readback) - (float)rpm) <= kTargetTolerance) {
-            return;
-        }
-    }
-    fail("Fan target did not settle at the requested RPM");
-}
-
 static void restore_auto(io_connect_t connection) {
     int count = fan_count(connection);
     if (count <= 0 || count > 10) {
@@ -639,15 +733,60 @@ static void restore_auto(io_connect_t connection) {
     }
 }
 
-static void print_status(io_connect_t connection) {
+static const char *mode_label(int mode) {
+    return mode == 0 || mode == 3 ? "Auto" : mode == 1 ? "Manual" : "Unknown";
+}
+
+static void print_status(io_connect_t connection, bool verbose) {
     FanState fans[10];
     int count = all_fans(connection, fans);
-    printf("Fans: %d\n", count);
+    if (verbose) printf("Fans: %d\n", count);
     for (int number = 0; number < count; number++) {
         const FanState *fan = &fans[number];
-        printf("Fan %d: %.0f RPM current, %.0f target, %.0f-%.0f allowed, %s\n",
-            fan->number, fan->current, fan->target, fan->minimum, fan->maximum,
-            fan->mode == 0 ? "auto" : "forced");
+        if (verbose) {
+            printf("Fan %d: %.0f RPM current, %.0f target, %.0f-%.0f allowed, %s (mode %d)\n",
+                fan->number + 1, fan->current, fan->target, fan->minimum, fan->maximum,
+                mode_label(fan->mode), fan->mode);
+        } else {
+            printf("%sFan %d  %5.0f RPM  %s\n", terminal_output ? "🌀 " : "",
+                fan->number + 1, fan->current, mode_label(fan->mode));
+        }
+    }
+}
+
+static void finish_change(io_connect_t connection, const FanState *before, int count,
+    bool automatic, bool maximum, int rpm) {
+    FanState after[10];
+    for (int attempt = 0; attempt < kSpeedAttempts; attempt++) {
+        check_interrupted();
+        if (all_fans(connection, after) != count) fail("Fan count changed during control");
+        bool reached = true;
+        for (int index = 0; index < count; index++) {
+            const FanState *fan = &after[index];
+            float target = automatic ? fan->target : maximum ? before[index].maximum : (float)rpm;
+            if (!automatic && (fan->mode != 1 || fabsf(fan->target - target) > kTargetTolerance)) {
+                fail("macOS changed fan control before the command completed");
+            }
+            if (automatic && fan->mode != 0 && fan->mode != 3) fail("Automatic mode was lost");
+            if (fabsf(fan->current - target) > kTargetTolerance) reached = false;
+        }
+        if (reached || attempt + 1 == kSpeedAttempts) break;
+        progress_note("Reading actual RPM");
+        usleep(kModePollMicroseconds);
+    }
+    progress_clear();
+    force_recovery.armed = false;
+    for (int index = 0; index < count; index++) {
+        const FanState *fan = &after[index];
+        printf("%sFan %d  %s%5.0f%s %s %s%5.0f%s RPM%s", terminal_output ? "🌀 " : "",
+            fan->number + 1, color_output ? "\033[2m" : "", before[index].current,
+            color_output ? "\033[0m" : "", terminal_output ? "→" : "->",
+            color_output ? "\033[1;36m" : "", fan->current, color_output ? "\033[0m" : "",
+            automatic ? "  Auto" : maximum ? "  Max" : "");
+        if (!automatic && fabsf(fan->current - fan->target) > kTargetTolerance) {
+            printf("  (target %.0f)", fan->target);
+        }
+        putchar('\n');
     }
 }
 
@@ -696,16 +835,31 @@ static void force_fans(io_connect_t connection, const FanState *fans, int count,
     if (saw_force_bits && !has_format(&optional, "ui16", 2)) {
         fail("Unsupported global force key format");
     }
+    check_interrupted();
     force_recovery = (ForceRecovery){.armed = true, .connection = connection,
         .count = count, .touched_force_bits = saw_force_bits,
         .touched_test_mode = saw_test_mode};
     set_optional_byte(connection, "Ftst", 1, saw_test_mode);
     set_optional_force_bits(connection, (uint16_t)((1U << count) - 1), saw_force_bits);
+    set_manual_modes(connection, fans, count);
     for (int number = 0; number < count; number++) {
-        set_fan(connection, &fans[number], targets[number], &encoded[number]);
+        check_interrupted();
+        write_key(connection, &encoded[number]);
     }
-    print_status(connection);
-    force_recovery.armed = false;
+    for (int attempt = 0; attempt < 8; attempt++) {
+        check_interrupted();
+        bool reached = true;
+        for (int number = 0; number < count; number++) {
+            FanState current = read_fan(connection, fans[number].number);
+            if (current.mode != 1 || fabsf(current.target - (float)targets[number]) > kTargetTolerance) {
+                reached = false;
+            }
+        }
+        if (reached) return;
+        progress_note("Applying RPM");
+        if (attempt + 1 < 8) usleep(kModePollMicroseconds);
+    }
+    fail("Fan target did not settle at the requested RPM");
 }
 
 static void usage(void) {
@@ -715,7 +869,10 @@ static void usage(void) {
          "  fanctl max\n"
          "  fanctl auto\n"
          "  fanctl <RPM>\n"
-         "  fanctl stat");
+         "  fanctl stat [--verbose]\n"
+         "\n"
+         "Options:\n"
+         "  --no-color  Disable color (also: NO_COLOR)");
 }
 
 // Standalone builds use system sudo. The managed owner build explicitly keeps
@@ -742,18 +899,25 @@ static void run_elevated(int argc, char *argv[]) {
         "%.*s/admin_authorize", (int)(separator - resolved), resolved) >= (int)sizeof(authorizer)) {
         fail("Cannot locate the configured administrator helper");
     }
+    const char *selected_authorizer = authorizer;
 #else
-    const char *authorizer = "/usr/bin/sudo";
+    const char *selected_authorizer = "/usr/bin/sudo";
 #endif
 
-    char *authorize_args[argc + 2];
-    authorize_args[0] = (char *)authorizer;
-    authorize_args[1] = resolved;
+    char *authorize_args[argc + 4];
+    int next = 0;
+    authorize_args[next++] = (char *)selected_authorizer;
+    authorize_args[next++] = resolved;
+    bool has_no_color = false;
     for (int index = 1; index < argc; index++) {
-        authorize_args[index + 1] = argv[index];
+        authorize_args[next++] = argv[index];
+        if (strcmp(argv[index], "--no-color") == 0) has_no_color = true;
     }
-    authorize_args[argc + 1] = NULL;
-    execv(authorizer, authorize_args);
+    /* sudo can remove NO_COLOR from its environment; preserve the user's
+       presentation choice as a normal CLI flag across either authorizer. */
+    if (getenv("NO_COLOR") != NULL && !has_no_color) authorize_args[next++] = "--no-color";
+    authorize_args[next] = NULL;
+    execv(selected_authorizer, authorize_args);
     fail("Cannot request administrator access");
 }
 
@@ -764,10 +928,8 @@ int main(int argc, char *argv[]) {
         return EXIT_SUCCESS;
     }
 
-    if (argc != 2) {
-        usage();
-        return EXIT_FAILURE;
-    }
+    bool verbose = false;
+    bool no_color = getenv("NO_COLOR") != NULL;
 
     const char *command = argv[1];
     bool want_stat = strcmp(command, "stat") == 0;
@@ -778,22 +940,38 @@ int main(int argc, char *argv[]) {
         usage();
         return EXIT_FAILURE;
     }
+    for (int index = 2; index < argc; index++) {
+        if (strcmp(argv[index], "--no-color") == 0) no_color = true;
+        else if (want_stat && strcmp(argv[index], "--verbose") == 0) verbose = true;
+        else { usage(); return EXIT_FAILURE; }
+    }
 
     int rpm = want_set ? parse_rpm(command) : 0;
     if (geteuid() != 0) {
         run_elevated(argc, argv);
     }
 
+    const char *term = getenv("TERM");
+    terminal_output = isatty(STDOUT_FILENO) && (!term || strcmp(term, "dumb") != 0);
+    color_output = terminal_output && !no_color;
+    animate_progress = terminal_output && isatty(STDERR_FILENO) &&
+        !reduce_motion();
+
     io_connect_t connection = open_smc();
     if (want_stat) {
-        print_status(connection);
-    } else if (want_set || want_max) {
+        print_status(connection, verbose);
+    } else {
+        struct sigaction action = {0};
+        action.sa_handler = handle_signal;
+        sigemptyset(&action.sa_mask);
+        if (sigaction(SIGINT, &action, NULL) != 0 || sigaction(SIGTERM, &action, NULL) != 0) {
+            fail("Cannot install cancellation handler");
+        }
         FanState fans[10];
         int count = all_fans(connection, fans);
-        force_fans(connection, fans, count, want_set, rpm);
-    } else if (want_auto) {
-        restore_auto(connection);
-        print_status(connection);
+        if (want_set || want_max) force_fans(connection, fans, count, want_set, rpm);
+        else restore_auto(connection);
+        finish_change(connection, fans, count, want_auto, want_max, rpm);
     }
 
     IOServiceClose(connection);

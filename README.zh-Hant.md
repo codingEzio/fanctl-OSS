@@ -1,5 +1,5 @@
 # fanctl
-<!-- Modified by fanctl contributors on 2026-11-07: document automatic recovery. -->
+<!-- Modified by fanctl contributors on 2026-11-15: document control handoff and concise terminal output. -->
 
 [English](README.md) · [简体中文](README.zh-Hans.md) · [繁體中文](README.zh-Hant.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · [Español](README.es.md)
 
@@ -16,7 +16,16 @@ fanctl max        # each fan's own maximum
 fanctl auto       # hand control back to macOS
 ```
 
-`stat` 列出實際轉速、目標、允許範圍與自動／強制模式。數字目標必須落在每個風扇的允許範圍內；實際 RPM 可能需要一段時間才達到目標。`max` 使用各風扇自己的上限。
+`3000`、`max` 和 `auto` 只顯示每隻風扇實測的「操作前 → 操作後」RPM。`stat` 只列目前轉速和模式；`stat --verbose` 才展開目標、範圍和原始模式值。風扇從 1 編號。數字目標必須落在每隻風扇的允許範圍內；`max` 使用各自上限。
+
+```text
+🌀 Fan 1   1200 →  2997 RPM
+🌀 Fan 2   1200 →  3002 RPM
+```
+
+互動終端顯示輕量進度、風扇圖示和顏色；重新導向輸出為無動畫的純文字。`NO_COLOR` / `--no-color` 關閉顏色，`TERM=dumb` 關閉終端裝飾。登入使用者的 macOS「減少動態效果」設定會關閉進度動畫。CLI 保留英文。
+
+交權最多輪詢 30 秒，所有風扇一起處理；僅對已知的保護模式回覆（`0x82`）重試，其他寫入錯誤仍回報失敗。模式 `3` 屬於系統自動控制，不是手動。最多觀察實際轉速八秒；最終數字均為實測值，尚未達到的手動目標另行註明。變更中收到 `SIGINT` 或 `SIGTERM`，會先嘗試恢復並驗證自動模式再結束。訊號必須到達 fanctl；僅終止授權包裝程式不屬於已驗證的取消路徑。
 
 ## 建置精選來源
 
@@ -35,7 +44,7 @@ sh tests/fanctl_test.sh
 
 每條指令完成後 fanctl 就結束；強制目標持續到 `auto`、macOS 或其他控制器更改它。沒有常駐程式、登入項目、儲存設定或遙測。相容性取決於 Mac 的 AppleSMC 鍵；這是個人工具，不聲稱所有 Mac 都已驗收。
 
-若控制器寫入後變更失敗，fanctl 會嘗試讓所有風扇回到自動模式並驗證控制鍵。有效但非零的鍵最多重新檢查八次；寫入失敗或無法讀取的鍵仍會報錯。無法確認的鍵會明確回報；它不會還原先前的手動設定。無法識別的控制鍵格式或不完整的 SMC 回應會明確報錯。強制終止、斷電或控制器無法使用可能阻止復原。若復原不完整，請執行 `fanctl auto` 並用 `fanctl stat` 檢查。
+若控制器寫入後變更失敗，fanctl 會嘗試讓所有風扇回到自動模式並驗證控制鍵。復原中的解鎖確認和釋放確認，各有 30 秒輪詢窗口。已接受的解鎖仍在途中時，先等它生效再釋放，防止復原完成後才延遲解鎖。已自動的值不重複寫入；未知寫入失敗或無法讀取的鍵仍會報錯。無法確認的鍵會明確回報；它不會還原先前的手動設定。無法識別的控制鍵格式或不完整的 SMC 回應會明確報錯。強制終止、斷電或控制器無法使用可能阻止復原。若復原不完整，請執行 `fanctl auto` 並用 `fanctl stat` 檢查。
 
 已在一台 Mac 實測設定暫時轉速目標並切回自動；寫入失敗後的復原僅經模擬，其他 Mac 尚未驗證。
 

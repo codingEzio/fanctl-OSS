@@ -1,5 +1,5 @@
 # fanctl
-<!-- Modified by fanctl contributors on 2026-11-07: document automatic recovery. -->
+<!-- Modified by fanctl contributors on 2026-11-15: document control handoff and concise terminal output. -->
 
 [English](README.md) · [简体中文](README.zh-Hans.md) · [繁體中文](README.zh-Hant.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · [Español](README.es.md)
 
@@ -16,7 +16,16 @@ fanctl max        # each fan's own maximum
 fanctl auto       # hand control back to macOS
 ```
 
-`stat` prints current speed, requested target, allowed range and auto/forced mode. A numeric target applies only when it is inside every fan's allowed range. Current RPM can take time to reach the target. `max` uses each fan’s own maximum.
+`3000`, `max` and `auto` show each fan’s measured RPM before → after. `stat` shows only current RPM and mode; `stat --verbose` adds targets, ranges and raw mode values. Fans are numbered from 1. A numeric target must fit every fan’s allowed range; `max` uses each fan’s own maximum.
+
+```text
+🌀 Fan 1   1200 →  2997 RPM
+🌀 Fan 2   1200 →  3002 RPM
+```
+
+Interactive terminals show a small progress spinner, a fan icon and color. Redirected output is plain text with no animation. `NO_COLOR` / `--no-color` disables color; `TERM=dumb` disables terminal decoration. The logged-in user’s macOS Reduce Motion setting disables the spinner. The CLI remains English.
+
+Control handoff is polled for up to 30 seconds, with all fans handled together. Only the known protected-mode reply (`0x82`) is retried; other write errors remain failures. Mode `3` is system-controlled Auto, not manual. RPM is observed for up to eight seconds; final numbers are actual measurements, and an unmet manual target is shown separately. Receiving `SIGINT` / `SIGTERM` during a change attempts verified automatic recovery before exit. Signals must reach fanctl; stopping only an authorization wrapper is not a verified cancellation path.
 
 ## Build the selected source
 
@@ -35,7 +44,7 @@ Standalone builds use `/usr/bin/sudo` for all SMC commands, including `stat`. Th
 
 fanctl exits after each command. A forced target remains until `auto`, macOS or another controller changes it. It installs no daemon, login item, saved profile or telemetry. Compatibility depends on the Mac’s AppleSMC keys; this is a personal tool, with no all-Mac acceptance claim.
 
-If a change fails after a controller write, fanctl attempts to return every fan to automatic mode and verifies the control keys. It may recheck valid nonzero keys up to eight times; failed writes or unreadable keys remain errors. It reports keys it cannot confirm; it does not restore earlier manual settings. Unknown control-key formats and incomplete SMC replies fail visibly. Forced termination, power loss or an unavailable controller can prevent recovery. If recovery is incomplete, run `fanctl auto` and check `fanctl stat`.
+If a change fails after a controller write, fanctl attempts to return every fan to automatic mode and verifies the control keys. Each recovery transition has a 30-second polling budget. If an accepted unlock is still pending, it waits for that transition before releasing it; this prevents a late unlock from landing after recovery. Already-automatic values are not rewritten. Unexpected write failures and unreadable keys remain errors. It reports keys it cannot confirm; it does not restore earlier manual settings. Unknown control-key formats and incomplete SMC replies fail visibly. Forced termination, power loss or an unavailable controller can prevent recovery. If recovery is incomplete, run `fanctl auto` and check `fanctl stat`.
 
 On one Mac, a temporary target and the command to return to automatic mode were checked on real hardware. Recovery after a failed write has only been simulated; other Macs are unverified.
 

@@ -1,4 +1,5 @@
 /* Non-privileged CLI authorization contract. No SMC call may run here. */
+/* Modified on 2026-11-15: verbose status and presentation argument transfer. */
 #include <CoreFoundation/CoreFoundation.h>
 #include <IOKit/IOKitLib.h>
 #include <mach-o/dyld.h>
@@ -21,9 +22,16 @@ static char *fake_realpath(const char *path, char *resolved) {
 }
 static int fake_execv(const char *path, char *const arguments[]) {
     if (getenv("FANCTL_TEST_EXEC_FAIL")) { errno = ENOENT; return -1; }
-    if (!arguments[0] || !arguments[1] || !arguments[2] || arguments[3] ||
-        strcmp(arguments[0], path) || strcmp(arguments[1], "/fixture/bin/fanctl")) _Exit(81);
-    printf("authorize=%s executable=%s argument=%s\n", path, arguments[1], arguments[2]);
+    int executable = arguments[1] && strcmp(arguments[1], "-n") == 0 ? 2 : 1;
+    if (!arguments[0] || !arguments[executable] || !arguments[executable + 1] ||
+        strcmp(arguments[0], path) || strcmp(arguments[executable], "/fixture/bin/fanctl")) _Exit(81);
+    printf("authorize=%s executable=%s argument=%s", path, arguments[executable], arguments[executable + 1]);
+    for (int index = executable + 2; arguments[index]; index++) {
+        if (strcmp(arguments[index], "--no-color") &&
+            (strcmp(arguments[executable + 1], "stat") || strcmp(arguments[index], "--verbose"))) _Exit(81);
+        printf(" %s", arguments[index]);
+    }
+    printf("%s\n", executable == 2 ? " noninteractive=1" : "");
     fflush(stdout);
     _Exit(0);
 }

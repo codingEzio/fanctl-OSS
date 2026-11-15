@@ -25,3 +25,5 @@ https://www.gnu.org/licenses/old-licenses/gpl-2.0.txt
 ```
 
 The generic mark is documentation artwork. fanctl remains a command-line utility; no GUI or resident controller is part of this package.
+
+Control-handoff research consulted on 2026-11-15: [Stats issue 2928](https://github.com/exelban/stats/issues/2928) documents protected system mode, the asynchronous `Ftst` handoff and restoring system control. [MacFanControl's implementation notes](https://github.com/raminsharifi/MacFanControl#the-m3m4-unlock) describe a bounded 30-second protected-mode retry. These are behavioral references; no additional source code or runtime dependency was imported.

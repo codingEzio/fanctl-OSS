@@ -1,5 +1,5 @@
 # fanctl
-<!-- Modified by fanctl contributors on 2026-11-07: document automatic recovery. -->
+<!-- Modified by fanctl contributors on 2026-11-15: document control handoff and concise terminal output. -->
 
 [English](README.md) · [简体中文](README.zh-Hans.md) · [繁體中文](README.zh-Hant.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · [Español](README.es.md)
 
@@ -16,7 +16,16 @@ fanctl max        # each fan's own maximum
 fanctl auto       # hand control back to macOS
 ```
 
-`stat` muestra velocidad actual, objetivo, rango permitido y modo automático/forzado. Un objetivo numérico debe estar dentro del rango de cada ventilador. La velocidad actual puede tardar en alcanzar el objetivo. `max` usa el máximo de cada ventilador.
+`3000`, `max` y `auto` muestran las RPM medidas de cada ventilador antes → después. `stat` muestra solo las RPM actuales y el modo; `stat --verbose` añade objetivos, rangos y valores de modo. Los ventiladores se numeran desde 1. El objetivo numérico debe estar dentro del rango de todos; `max` usa el máximo de cada uno.
+
+```text
+🌀 Fan 1   1200 →  2997 RPM
+🌀 Fan 2   1200 →  3002 RPM
+```
+
+La terminal interactiva muestra un indicador de progreso, un icono de ventilador y color. La salida redirigida es texto sin animación. `NO_COLOR` / `--no-color` desactiva el color; `TERM=dumb` desactiva los adornos. Reducir movimiento de macOS para el usuario conectado desactiva la animación. La CLI sigue en inglés.
+
+La cesión de control se comprueba hasta 30 segundos, tratando todos los ventiladores juntos. Solo se reintenta la respuesta conocida de modo protegido (`0x82`); los demás errores de escritura siguen siendo fallos. El modo `3` es automático del sistema, no manual. Se observan las RPM hasta ocho segundos; los valores finales son mediciones y un objetivo manual aún no alcanzado se indica aparte. Al recibir `SIGINT` / `SIGTERM` durante un cambio, intenta recuperar y verificar el modo automático antes de salir. La señal debe llegar a fanctl; detener solo el intermediario de autorización no es una vía de cancelación verificada.
 
 ## Compilar la fuente seleccionada
 
@@ -35,7 +44,7 @@ La compilación independiente usa `/usr/bin/sudo` para comandos SMC, incluido `s
 
 Sale después de cada comando. El objetivo forzado sigue hasta que `auto`, macOS u otro controlador lo cambie. No instala daemon, inicio automático, perfiles guardados ni telemetría. La compatibilidad depende de las claves AppleSMC del Mac; no afirma aceptación en todos los modelos.
 
-Si un cambio falla después de escribir en el controlador, fanctl intenta devolver todos los ventiladores al modo automático y verifica las claves de control. Puede volver a comprobar hasta ocho veces las claves válidas que no sean cero; los fallos de lectura o escritura siguen siendo errores. Informa de las claves que no puede confirmar y no restaura ajustes manuales anteriores. Los formatos desconocidos de claves de control y las respuestas SMC incompletas se notifican como errores. Una terminación forzada, un corte de energía o un controlador inaccesible pueden impedir la recuperación. Si es incompleta, ejecuta `fanctl auto` y comprueba `fanctl stat`.
+Si un cambio falla después de escribir en el controlador, fanctl intenta devolver todos los ventiladores al modo automático y verifica las claves de control. Cada transición de recuperación tiene un plazo de comprobación de 30 segundos. Si hay un desbloqueo aceptado pendiente, espera a que se aplique antes de liberarlo para evitar una activación tardía. No vuelve a escribir valores ya automáticos. Los fallos inesperados de escritura y las claves ilegibles siguen siendo errores. Informa de las claves que no puede confirmar y no restaura ajustes manuales anteriores. Los formatos desconocidos de claves de control y las respuestas SMC incompletas se notifican como errores. Una terminación forzada, un corte de energía o un controlador inaccesible pueden impedir la recuperación. Si es incompleta, ejecuta `fanctl auto` y comprueba `fanctl stat`.
 
 En un Mac real se comprobaron un objetivo temporal y la vuelta al modo automático. La recuperación tras un fallo de escritura solo se ha simulado; no se ha verificado en otros Mac.
 

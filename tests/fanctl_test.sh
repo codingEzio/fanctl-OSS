@@ -1,6 +1,8 @@
 #!/bin/sh
 # Modified by fanctl contributors on 2026-11-07: exercise recovery with mock SMC state.
+# Modified on 2026-11-15: handoff, signal recovery and presentation arguments.
 set -eu
+unset NO_COLOR
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 temporary=$(/usr/bin/mktemp -d /private/tmp/delete_after_use_fanctl_test.XXXXXX)
 trap '/bin/rm -rf "$temporary"' EXIT HUP INT TERM
@@ -25,6 +27,11 @@ for mode in 0 1; do
     output=$("$temporary/authorization-$mode" "$command")
     test "$output" = "authorize=$expected executable=/fixture/bin/fanctl argument=$command"
   done
+  output=$("$temporary/authorization-$mode" stat --verbose)
+  test "$output" = "authorize=$expected executable=/fixture/bin/fanctl argument=stat --verbose"
+  output=$(NO_COLOR=1 "$temporary/authorization-$mode" 3000)
+  test "$output" = "authorize=$expected executable=/fixture/bin/fanctl argument=3000 --no-color"
+  if "$temporary/authorization-$mode" 3000 --verbose > "$temporary/invalid-option" 2>&1; then exit 1; fi
   if FANCTL_TEST_EXEC_FAIL=1 "$temporary/authorization-$mode" stat > "$temporary/error" 2>&1; then exit 1; fi
   grep -q 'Cannot request administrator access' "$temporary/error"
   if "$temporary/authorization-$mode" -1 > "$temporary/range" 2>&1; then exit 1; fi
@@ -56,7 +63,9 @@ for scenario in success max-success auto-success auto-optional-missing force-opt
   short-preflight short-after-write short-recovery-write short-auto \
   preflight-fs-format preflight-ftst-format preflight-mode-format preflight-fs-size \
   optional-vanishes-before-write auto-fs-format type-changed deferred-auto prewrite-handshake \
-  recovery-smc-error delayed-auto persistent-nonzero verification-key-vanishes; do
+  recovery-smc-error delayed-auto persistent-nonzero verification-key-vanishes \
+  protected-handoff delayed-handoff protected-timeout mode-other-error auto-system target-timeout \
+  auto-system-race cancel-handoff cancel-delayed-unlock; do
   "$temporary/recovery" "$scenario" > "$temporary/recovery-output" 2> "$temporary/recovery-$scenario"
 done
 grep -q 'automatic mode verified' "$temporary/recovery-transport-after-write"
@@ -68,11 +77,16 @@ grep -q 'automatic recovery incomplete' "$temporary/recovery-partial-recovery"
 grep -q 'F0Md' "$temporary/recovery-partial-recovery"
 grep -q 'F0Md' "$temporary/recovery-auto-partial"
 grep -q 'F0Md write SMC result: 0x01' "$temporary/recovery-recovery-smc-error"
-grep -q 'F0Md verify attempt 1: status=0 type=ui8  size=1 bytes=0100 monotonic=' "$temporary/recovery-delayed-auto"
-grep -q 'F0Md verify attempt 8: status=0 type=ui8  size=1 bytes=0100 monotonic=' "$temporary/recovery-persistent-nonzero"
+grep -q 'F0Md verify attempt 120: status=0 type=ui8  size=1 bytes=0100 monotonic=' "$temporary/recovery-persistent-nonzero"
 grep -q 'FS!  verify attempt 2: status=1' "$temporary/recovery-verification-key-vanishes"
 grep -q 'automatic recovery incomplete' "$temporary/recovery-optional-disappears"
 grep -q 'automatic recovery incomplete' "$temporary/recovery-optional-vanishes-before-write"
 grep -q 'automatic recovery incomplete' "$temporary/recovery-short-recovery-write"
 grep -q 'FS! ' "$temporary/recovery-auto-fs-format"
+grep -q 'automatic mode verified' "$temporary/recovery-protected-timeout"
+grep -q 'Cannot write fan mode: SMC result 0x01' "$temporary/recovery-mode-other-error"
+grep -q 'automatic mode verified' "$temporary/recovery-target-timeout"
+grep -q 'Cancelled' "$temporary/recovery-cancel-handoff"
+grep -q 'automatic mode verified' "$temporary/recovery-cancel-handoff"
+grep -q 'automatic mode verified' "$temporary/recovery-cancel-delayed-unlock"
 printf 'fanctl: build/help, authorization handoff, synthetic SMC and recovery tests passed; no SMC access.\n'
