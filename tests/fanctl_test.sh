@@ -1,6 +1,6 @@
 #!/bin/sh
 # Modified by fanctl contributors on 2026-11-07: exercise recovery with mock SMC state.
-# Modified on 2026-11-15: handoff, signal recovery and presentation arguments.
+# Modified on 2026-11-15: handoff, signal recovery and cached authorization.
 set -eu
 unset NO_COLOR
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
@@ -32,6 +32,12 @@ for mode in 0 1; do
   output=$(NO_COLOR=1 "$temporary/authorization-$mode" 3000)
   test "$output" = "authorize=$expected executable=/fixture/bin/fanctl argument=3000 --no-color"
   if "$temporary/authorization-$mode" 3000 --verbose > "$temporary/invalid-option" 2>&1; then exit 1; fi
+  if [ "$mode" = 1 ]; then
+    output=$(FANCTL_TEST_CACHED=1 "$temporary/authorization-$mode" 3000)
+    test "$output" = 'authorize=/usr/bin/sudo executable=/fixture/bin/fanctl argument=3000 noninteractive=1'
+    if FANCTL_TEST_CACHE_PROBE_ERROR=1 "$temporary/authorization-$mode" 3000 > "$temporary/cache-error" 2>&1; then exit 1; fi
+    grep -q 'Cannot check cached administrator access' "$temporary/cache-error"
+  fi
   if FANCTL_TEST_EXEC_FAIL=1 "$temporary/authorization-$mode" stat > "$temporary/error" 2>&1; then exit 1; fi
   grep -q 'Cannot request administrator access' "$temporary/error"
   if "$temporary/authorization-$mode" -1 > "$temporary/range" 2>&1; then exit 1; fi

@@ -40,7 +40,7 @@ sh tests/fanctl_test.sh
 
 ## 權限與狀態
 
-獨立建置對所有 SMC 指令（包含 `stat`）使用 `/usr/bin/sudo`。主人託管建置明確選擇現有的相鄰授權 helper。`--help` 與無效參數不要求權限。`FANCTL_USE_ADJACENT_AUTHORIZER` 是建置選擇：預設 `0`，主人安裝器為 `1`，其他值拒絕編譯；選定 helper 不存在會明確失敗，不自動換路徑。
+獨立建置對所有 SMC 指令（包含 `stat`）使用 `/usr/bin/sudo`。主人託管建置先無提示檢查系統 sudo 授權快取；快取有效時用非互動 sudo，否則使用現有的相鄰授權 helper。不儲存密碼，也不修改 sudo 策略。`--help` 與無效參數不要求權限。`FANCTL_USE_ADJACENT_AUTHORIZER` 是建置選擇：預設 `0`，主人安裝器為 `1`，其他值拒絕編譯；選定 helper 不存在會明確失敗，不自動換路徑。
 
 每條指令完成後 fanctl 就結束；強制目標持續到 `auto`、macOS 或其他控制器更改它。沒有常駐程式、登入項目、儲存設定或遙測。相容性取決於 Mac 的 AppleSMC 鍵；這是個人工具，不聲稱所有 Mac 都已驗收。
 

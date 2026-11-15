@@ -40,7 +40,7 @@ sh tests/fanctl_test.sh
 
 ## Permisos y estado
 
-La compilación independiente usa `/usr/bin/sudo` para comandos SMC, incluido `stat`. La del propietario selecciona su helper adyacente existente. `--help` y los argumentos inválidos no piden acceso. La opción de compilación `FANCTL_USE_ADJACENT_AUTHORIZER` es `0` por defecto y `1` para el instalador del propietario; otros valores impiden compilar. Si falta el helper elegido, falla de forma visible sin cambiar de vía.
+La compilación independiente usa `/usr/bin/sudo` para comandos SMC, incluido `stat`. La del propietario comprueba primero la caché de sudo sin pedir contraseña. Si sigue válida, usa sudo no interactivo; de lo contrario, usa su helper adyacente existente. No guarda contraseñas ni cambia la política de sudo. `--help` y los argumentos inválidos no piden acceso. La opción de compilación `FANCTL_USE_ADJACENT_AUTHORIZER` es `0` por defecto y `1` para el instalador del propietario; otros valores impiden compilar. Si falta el helper elegido, falla de forma visible sin cambiar de vía.
 
 Sale después de cada comando. El objetivo forzado sigue hasta que `auto`, macOS u otro controlador lo cambie. No instala daemon, inicio automático, perfiles guardados ni telemetría. La compatibilidad depende de las claves AppleSMC del Mac; no afirma aceptación en todos los modelos.
 

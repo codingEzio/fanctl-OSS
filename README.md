@@ -40,7 +40,7 @@ sh tests/fanctl_test.sh
 
 ## Permissions and state
 
-Standalone builds use `/usr/bin/sudo` for all SMC commands, including `stat`. The managed owner build explicitly selects its existing adjacent authorization helper. `--help` and invalid arguments do not request access. `FANCTL_USE_ADJACENT_AUTHORIZER` is a build choice: default `0`, owner installer `1`; other values fail compilation. A missing chosen helper fails visibly without silently switching paths.
+Standalone builds use `/usr/bin/sudo` for all SMC commands, including `stat`. The managed owner build first checks the existing system sudo cache without prompting. While that cache is valid it uses noninteractive sudo; otherwise it selects the existing adjacent authorization helper. It stores no password and does not change sudo policy. `--help` and invalid arguments do not request access. `FANCTL_USE_ADJACENT_AUTHORIZER` is a build choice: default `0`, owner installer `1`; other values fail compilation. A missing chosen helper fails visibly without silently switching paths.
 
 fanctl exits after each command. A forced target remains until `auto`, macOS or another controller changes it. It installs no daemon, login item, saved profile or telemetry. Compatibility depends on the Mac’s AppleSMC keys; this is a personal tool, with no all-Mac acceptance claim.
 

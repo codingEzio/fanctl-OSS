@@ -40,7 +40,7 @@ sh tests/fanctl_test.sh
 
 ## 权限与状态
 
-独立构建对所有 SMC 指令（包括 `stat`）使用 `/usr/bin/sudo`。主人托管构建明确选择现有的相邻授权 helper。`--help` 与无效参数不请求权限。`FANCTL_USE_ADJACENT_AUTHORIZER` 是构建选择：默认 `0`，主人安装器为 `1`，其他值拒绝编译；选定 helper 不存在会明确失败，不自动换路径。
+独立构建对所有 SMC 指令（包括 `stat`）使用 `/usr/bin/sudo`。主人托管构建先无提示检查系统 sudo 授权缓存；缓存有效时用非交互 sudo，否则使用现有的相邻授权 helper。不保存密码，也不修改 sudo 策略。`--help` 与无效参数不请求权限。`FANCTL_USE_ADJACENT_AUTHORIZER` 是构建选择：默认 `0`，主人安装器为 `1`，其他值拒绝编译；选定 helper 不存在会明确失败，不自动换路径。
 
 每条指令完成后 fanctl 就退出；强制目标持续到 `auto`、macOS 或其他控制器更改它。没有常驻程序、登录项、保存配置或遥测。兼容性取决于 Mac 的 AppleSMC 键；这是个人工具，不声称所有 Mac 都已验收。
 

@@ -7,6 +7,8 @@
 // Modified on 2026-11-15: wait for thermal-manager handoff and recognize system mode.
 
 #include <CoreFoundation/CoreFoundation.h>
+#include <errno.h>
+#include <fcntl.h>
 #include <IOKit/IOKitLib.h>
 #include <IOKit/IOReturn.h>
 #include <mach-o/dyld.h>
@@ -884,6 +886,28 @@ static void usage(void) {
 #error "FANCTL_USE_ADJACENT_AUTHORIZER must be 0 or 1"
 #endif
 
+#if FANCTL_USE_ADJACENT_AUTHORIZER
+/* Probe sudo's own cache without a prompt. Never keep a password in fanctl. */
+static bool cached_authorization(void) {
+    pid_t child = fork();
+    if (child < 0) fail("Cannot check cached administrator access");
+    if (child == 0) {
+        int sink = open("/dev/null", O_RDWR);
+        if (sink < 0 || dup2(sink, STDIN_FILENO) < 0 ||
+            dup2(sink, STDOUT_FILENO) < 0 || dup2(sink, STDERR_FILENO) < 0) _exit(127);
+        if (sink > STDERR_FILENO) close(sink);
+        char *arguments[] = {"/usr/bin/sudo", "-n", "-v", NULL};
+        execv(arguments[0], arguments);
+        _exit(127);
+    }
+    int status = 0;
+    pid_t result;
+    do { result = waitpid(child, &status, 0); } while (result < 0 && errno == EINTR);
+    if (result < 0) fail("Cannot read cached administrator access result");
+    return WIFEXITED(status) && WEXITSTATUS(status) == 0;
+}
+#endif
+
 static void run_elevated(int argc, char *argv[]) {
     char executable[PATH_MAX];
     char resolved[PATH_MAX];
@@ -899,14 +923,17 @@ static void run_elevated(int argc, char *argv[]) {
         "%.*s/admin_authorize", (int)(separator - resolved), resolved) >= (int)sizeof(authorizer)) {
         fail("Cannot locate the configured administrator helper");
     }
-    const char *selected_authorizer = authorizer;
+    bool cached = cached_authorization();
+    const char *selected_authorizer = cached ? "/usr/bin/sudo" : authorizer;
 #else
+    bool cached = false;
     const char *selected_authorizer = "/usr/bin/sudo";
 #endif
 
     char *authorize_args[argc + 4];
     int next = 0;
     authorize_args[next++] = (char *)selected_authorizer;
+    if (cached) authorize_args[next++] = "-n";
     authorize_args[next++] = resolved;
     bool has_no_color = false;
     for (int index = 1; index < argc; index++) {
