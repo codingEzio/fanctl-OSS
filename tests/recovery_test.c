@@ -32,18 +32,33 @@ static bool pending_test_enable;
 static _Noreturn void fake_exit(int status) { exit_status = status; longjmp(stopped, 1); }
 static int fake_sleep(useconds_t duration) { (void)duration; sleeps++; return 0; }
 static kern_return_t fake_smc(io_connect_t, uint32_t, const void *, size_t, void *, size_t *);
-static kern_return_t forbidden_service(mach_port_t port, CFDictionaryRef matching,
+/* Run the real command parser and rendering against only the synthetic keys. */
+static kern_return_t fake_service(mach_port_t port, CFDictionaryRef matching,
     io_iterator_t *iterator) {
-    (void)port; (void)matching; (void)iterator;
-    fputs("Real IOKit access is forbidden in recovery tests\n", stderr);
-    _Exit(80);
+    (void)port;
+    CFRelease(matching);
+    *iterator = 1;
+    return KERN_SUCCESS;
 }
-
+static kern_return_t fake_open(io_service_t device, task_port_t task, uint32_t type,
+    io_connect_t *connection) {
+    (void)device; (void)task; (void)type;
+    *connection = 1;
+    return KERN_SUCCESS;
+}
+static io_object_t fake_next(io_iterator_t iterator) { return iterator; }
+static kern_return_t fake_release(io_object_t object) { (void)object; return KERN_SUCCESS; }
+static uid_t fixture_uid(void) { return strcmp(scenario, "stat") == 0 ? 501 : 0; }
+#define geteuid fixture_uid
+#define IOServiceOpen fake_open
+#define IOIteratorNext fake_next
+#define IOObjectRelease fake_release
+#define IOServiceClose fake_release
 #define main fanctl_original_main
 #define exit fake_exit
 #define usleep fake_sleep
 #define IOConnectCallStructMethod fake_smc
-#define IOServiceGetMatchingServices forbidden_service
+#define IOServiceGetMatchingServices fake_service
 #ifndef FANCTL_SOURCE_INCLUDE
 #define FANCTL_SOURCE_INCLUDE "../fanctl.c"
 #endif
@@ -216,6 +231,11 @@ static bool state(unsigned int test, unsigned int force, unsigned int mode0, uns
 }
 
 int main(int argc, char **argv) {
+    if (argc >= 3 && strcmp(argv[1], "cli") == 0) {
+        scenario = argv[2];
+        if (setjmp(stopped)) return exit_status;
+        return fanctl_original_main(argc - 1, argv + 1);
+    }
     if (argc != 2) return 2;
     scenario = argv[1];
     FanState fans[2] = {

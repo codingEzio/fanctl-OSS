@@ -73,6 +73,12 @@ for scenario in optional-metadata-transport-error optional-read-transport-error;
 done
 xcrun clang -std=c17 -O2 -Wall -Wextra -Werror -framework IOKit -framework CoreFoundation \
   "-DFANCTL_SOURCE_INCLUDE=$include" "$script_dir/recovery_test.c" -o "$temporary/recovery"
+test "$("$temporary/recovery" cli stat)" = 'Fan 1   2000 RPM  Auto
+Fan 2   2000 RPM  Auto'
+for option in '' '--wait'; do
+  "$temporary/recovery" cli 2500 ${option:+"$option"} > "$temporary/receipt"
+  grep -q 'Fan 1   2000 ->  2000 RPM  (target 2500)' "$temporary/receipt"
+done
 for scenario in success max-success auto-success auto-optional-missing force-optional-missing \
   preflight-error preflight-optional-error preexisting-force transport-after-write partial-recovery \
   status-error auto-partial optional-disappears missing-optional-after-write rpm-overflow invalid-range \

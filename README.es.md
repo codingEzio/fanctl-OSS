@@ -19,11 +19,11 @@ fanctl auto       # hand control back to macOS
 `3000`, `max` y `auto` muestran las RPM medidas de cada ventilador antes → después. `stat` muestra solo las RPM actuales y el modo; `stat --verbose` añade objetivos, rangos y valores de modo. Los ventiladores se numeran desde 1. El objetivo numérico debe estar dentro del rango de todos; `max` usa el máximo de cada uno.
 
 ```text
-🌀 Fan 1   1200 →  2997 RPM
-🌀 Fan 2   1200 →  3002 RPM
+Fan 01  ▰▰▰▰▰···········   2000 RPM  Manual
+        from 2000 RPM  ·  target 2500
 ```
 
-La terminal interactiva muestra un indicador de progreso, un icono de ventilador y color. La salida redirigida es texto sin animación. `NO_COLOR` / `--no-color` desactiva el color; `TERM=dumb` desactiva los adornos. Reducir movimiento de macOS para el usuario conectado desactiva la animación. La CLI sigue en inglés. Para automatización, `--non-interactive` prohíbe pedir contraseña y falla si no hay autorización.
+La terminal interactiva muestra las RPM medidas en una barra de ámbar a rojo, a escala del máximo de cada ventilador. En terminales estrechas se mantienen las cifras y el modo. La salida redirigida es texto sin animación. `NO_COLOR` / `--no-color` desactiva el color; `TERM=dumb` desactiva los adornos. Reducir movimiento de macOS para el usuario conectado desactiva la animación. La CLI sigue en inglés. Para automatización, `--non-interactive` prohíbe pedir contraseña y falla si no hay autorización.
 
 La cesión de control se comprueba hasta 30 segundos, tratando todos los ventiladores juntos. Solo se reintenta la respuesta conocida de modo protegido (`0x82`); los demás errores de escritura siguen siendo fallos. El modo `3` es automático del sistema, no manual. Por defecto, se leen las RPM en cuanto se confirma el cambio. Con `--wait` se observan hasta ocho segundos; los valores finales son mediciones y un objetivo manual aún no alcanzado se indica aparte. Al recibir `SIGINT` / `SIGTERM` durante un cambio, intenta recuperar y verificar el modo automático antes de salir. La señal debe llegar a fanctl; detener solo el intermediario de autorización no es una vía de cancelación verificada.
 

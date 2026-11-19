@@ -19,11 +19,11 @@ fanctl auto       # hand control back to macOS
 `3000`, `max` and `auto` show each fan’s measured RPM before → after. `stat` shows only current RPM and mode; `stat --verbose` adds targets, ranges and raw mode values. Fans are numbered from 1. A numeric target must fit every fan’s allowed range; `max` uses each fan’s own maximum.
 
 ```text
-🌀 Fan 1   1200 →  2997 RPM
-🌀 Fan 2   1200 →  3002 RPM
+Fan 01  ▰▰▰▰▰···········   2000 RPM  Manual
+        from 2000 RPM  ·  target 2500
 ```
 
-Interactive terminals show a small progress spinner, a fan icon and color. Redirected output is plain text with no animation. `NO_COLOR` / `--no-color` disables color; `TERM=dumb` disables terminal decoration. The logged-in user’s macOS Reduce Motion setting disables the spinner. The CLI remains English. For automation, `--non-interactive` forbids password prompts and fails when authorization is unavailable.
+Interactive terminals show measured RPM on an amber-to-red tachometer scaled to each fan’s maximum. Narrow terminals keep the numbers and mode. Redirected output is plain text with no animation. `NO_COLOR` / `--no-color` disables color; `TERM=dumb` disables terminal decoration. The logged-in user’s macOS Reduce Motion setting disables the spinner. The CLI remains English. For automation, `--non-interactive` forbids password prompts and fails when authorization is unavailable.
 
 Control handoff is polled for up to 30 seconds, with all fans handled together. Only the known protected-mode reply (`0x82`) is retried; other write errors remain failures. Mode `3` is system-controlled Auto, not manual. By default, fanctl samples RPM once after verifying control. Add `--wait` to observe motor response for up to eight seconds; final numbers are actual measurements, and an unmet manual target is shown separately. Receiving `SIGINT` / `SIGTERM` during a change attempts verified automatic recovery before exit. Signals must reach fanctl; stopping only an authorization wrapper is not a verified cancellation path.
 

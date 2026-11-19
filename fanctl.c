@@ -21,6 +21,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
@@ -105,7 +106,8 @@ static ForceRecovery force_recovery;
 static volatile sig_atomic_t interrupted;
 static bool terminal_output;
 static bool color_output;
-static bool animate_progress;
+static bool progress_terminal;
+static int terminal_columns;
 static bool progress_visible;
 
 static void progress_clear(void) {
@@ -116,16 +118,36 @@ static void progress_clear(void) {
     }
 }
 
-static void progress_note(const char *phase) {
-    if (!animate_progress) return;
-    static const char *frames[] = {"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"};
+static bool reduce_motion(void);
+
+static void progress_sample(const char *phase, const FanState *fan) {
+    if (!progress_terminal) return;
+    static const char *last_phase;
+    static bool still;
+    static struct timespec started;
     struct timespec now = {0};
     (void)clock_gettime(CLOCK_MONOTONIC, &now);
-    unsigned int frame = (unsigned int)(now.tv_nsec / 125000000L);
-    fprintf(stderr, "\r\033[2K🌀 %s %s", frames[frame], phase);
+    if (!last_phase) {
+        still = reduce_motion();
+        started = now;
+    }
+    if (still && last_phase && strcmp(last_phase, phase) == 0) return;
+    last_phase = phase;
+    double elapsed = difftime(now.tv_sec, started.tv_sec) +
+        (now.tv_nsec - started.tv_nsec) / 1e9;
+    static const char *rotor[] = {"◐", "◓", "◑", "◒"};
+    const char *mark = still ? "•" : rotor[now.tv_nsec / 250000000L];
+    fprintf(stderr, "\r\033[2K%s%s%s  %s", color_output ? "\033[33m" : "",
+        mark, color_output ? "\033[0m" : "", phase);
+    if (fan && !still && terminal_columns >= 56) {
+        fprintf(stderr, "  Fan %d  %.0f → %.0f RPM", fan->number + 1, fan->current, fan->target);
+    }
+    if (!still && elapsed >= 1) fprintf(stderr, "  %.0fs", elapsed);
     fflush(stderr);
     progress_visible = true;
 }
+
+static void progress_note(const char *phase) { progress_sample(phase, NULL); }
 
 static void handle_signal(int number) { interrupted = number; }
 
@@ -534,12 +556,12 @@ static bool restore_fans_best_effort(io_connect_t connection, int count,
     if (force_recovery.pending_test_mode) {
         bool acknowledged = false;
         for (int attempt = 0; attempt < kModeAttempts; attempt++) {
-            progress_note("Restoring Auto");
             SMCValue value = {0};
             if (recovery_read_key(connection, "Ftst", &value) != kRecoveryReadOK ||
                 !has_format(&value, "ui8 ", 1)) break;
             if (value.bytes[0] == 1) { acknowledged = true; break; }
             if (value.bytes[0] != 0) break;
+            progress_note("Restoring Auto");
             if (attempt + 1 < kModeAttempts) usleep(kModePollMicroseconds);
         }
         force_recovery.pending_test_mode = false;
@@ -559,7 +581,6 @@ static bool restore_fans_best_effort(io_connect_t connection, int count,
        Missing/invalid reads or failed writes return promptly for fallback. */
     int attempts = success ? kModeAttempts : 1;
     for (int attempt = 1; attempt <= attempts; attempt++) {
-        progress_note("Returning to Auto");
         bool all_zero = true;
         bool error = false;
         for (size_t index = 0; index < total; index++) {
@@ -569,7 +590,8 @@ static bool restore_fans_best_effort(io_connect_t connection, int count,
         }
         if (all_zero) { verified = true; break; }
         if (error || attempt == attempts) break;
-        usleep(250000);
+        progress_note("Returning to Auto");
+        usleep(kModePollMicroseconds);
     }
     return success && verified;
 }
@@ -699,7 +721,6 @@ static void set_manual_modes(io_connect_t connection, const FanState *fans, int 
     int attempts = force_recovery.touched_test_mode ? kModeAttempts : 1;
     for (int attempt = 0; attempt < attempts; attempt++) {
         check_interrupted();
-        progress_note("Taking control");
         bool all_manual = true;
         for (int index = 0; index < count; index++) {
             SMCValue value = read_fan_key(connection, fans[index].number, "Md");
@@ -715,6 +736,7 @@ static void set_manual_modes(io_connect_t connection, const FanState *fans, int 
             if (result != kSMCSuccess || readback.bytes[0] != 1) all_manual = false;
         }
         if (all_manual) return;
+        progress_note("Taking control");
         if (attempt + 1 < attempts) usleep(kModePollMicroseconds);
     }
     fail(attempts > 1 ? "macOS did not release fan control within 30 seconds" :
@@ -754,19 +776,62 @@ static const char *mode_label(int mode) {
     return mode == 0 || mode == 3 ? "Auto" : mode == 1 ? "Manual" : "Unknown";
 }
 
+/* Each tachometer spans zero to this fan's rated maximum. The number remains
+   legible on its own in a narrow terminal or a monochrome color scheme. */
+static void print_meter(float current, float maximum, int segments) {
+    if (segments == 0 || maximum <= 0) return;
+    int lit = (int)lroundf(fminf(current / maximum, 1) * segments);
+    for (int i = 0; i < segments; i++) {
+        if (color_output) {
+            if (i == lit) fputs("\033[0;2m", stdout);
+            else if (i < lit) {
+                if (i == 0) fputs("\033[33m", stdout);
+                else if (i == segments / 2) fputs("\033[38;5;208m", stdout);
+                else if (i == segments * 3 / 4) fputs("\033[31m", stdout);
+            }
+        }
+        fputs(i < lit ? "▰" : "·", stdout);
+    }
+    if (color_output) fputs("\033[0m", stdout);
+    fputs("  ", stdout);
+}
+
+static void print_terminal_fan(const FanState *fan, const FanState *before, bool maximum,
+    bool verbose) {
+    const char *bold = color_output ? "\033[1m" : "";
+    const char *reset = color_output ? "\033[0m" : "";
+    printf(terminal_columns < 32 ? "Fan %d " : "Fan %02d  ", fan->number + 1);
+    int segments = terminal_columns >= 72 ? 16 : terminal_columns >= 48 ? 8 : 0;
+    print_meter(fan->current, fan->maximum, segments);
+    printf("%s%5.0f%s RPM  %s\n", bold, fan->current, reset,
+        maximum ? "Max" : mode_label(fan->mode));
+    if (before) {
+        printf("        from %.0f RPM", before->current);
+        if (fan->mode == 1 && fabsf(fan->current - fan->target) > kTargetTolerance) {
+            printf("%starget %.0f", terminal_columns >= 48 ? "  ·  " : "\n        ", fan->target);
+        }
+        putchar('\n');
+    } else if (verbose) {
+        printf("        target %.0f%srange %.0f–%.0f%sraw mode %d\n",
+            fan->target, terminal_columns >= 48 ? "  ·  " : "\n        ", fan->minimum, fan->maximum,
+            terminal_columns >= 64 ? "  ·  " : "\n        ", fan->mode);
+    }
+}
+
 static void print_status(io_connect_t connection, bool verbose) {
     FanState fans[10];
     int count = all_fans(connection, fans);
-    if (verbose) printf("Fans: %d\n", count);
+    if (verbose && !terminal_output) printf("Fans: %d\n", count);
     for (int number = 0; number < count; number++) {
         const FanState *fan = &fans[number];
-        if (verbose) {
+        if (terminal_output) {
+            print_terminal_fan(fan, NULL, false, verbose);
+        } else if (verbose) {
             printf("Fan %d: %.0f RPM current, %.0f target, %.0f-%.0f allowed, %s (mode %d)\n",
                 fan->number + 1, fan->current, fan->target, fan->minimum, fan->maximum,
                 mode_label(fan->mode), fan->mode);
         } else {
-            printf("%sFan %d  %5.0f RPM  %s\n", terminal_output ? "🌀 " : "",
-                fan->number + 1, fan->current, mode_label(fan->mode));
+            printf("Fan %d  %5.0f RPM  %s\n", fan->number + 1, fan->current, mode_label(fan->mode));
         }
     }
 }
@@ -777,7 +842,7 @@ static void finish_change(io_connect_t connection, const FanState *before, int c
     for (int attempt = 0; attempt < kSpeedAttempts; attempt++) {
         check_interrupted();
         if (fan_count(connection) != count) fail("Fan count changed during control");
-        bool reached = true;
+        const FanState *unsettled = NULL;
         for (int index = 0; index < count; index++) {
             FanState *fan = &after[index];
             fan->number = before[index].number;
@@ -790,10 +855,10 @@ static void finish_change(io_connect_t connection, const FanState *before, int c
                 fail("macOS changed fan control before the command completed");
             }
             if (automatic && fan->mode != 0 && fan->mode != 3) fail("Automatic mode was lost");
-            if (fabsf(fan->current - target) > kTargetTolerance) reached = false;
+            if (!unsettled && fabsf(fan->current - target) > kTargetTolerance) unsettled = fan;
         }
-        if (!wait || reached || attempt + 1 == kSpeedAttempts) break;
-        progress_note("Reading actual RPM");
+        if (!wait || !unsettled || attempt + 1 == kSpeedAttempts) break;
+        progress_sample("Tracking RPM", unsettled);
         usleep(kModePollMicroseconds);
     }
     check_interrupted();
@@ -801,11 +866,12 @@ static void finish_change(io_connect_t connection, const FanState *before, int c
     force_recovery.armed = false;
     for (int index = 0; index < count; index++) {
         const FanState *fan = &after[index];
-        printf("%sFan %d  %s%5.0f%s %s %s%5.0f%s RPM%s", terminal_output ? "🌀 " : "",
-            fan->number + 1, color_output ? "\033[2m" : "", before[index].current,
-            color_output ? "\033[0m" : "", terminal_output ? "→" : "->",
-            color_output ? "\033[1;36m" : "", fan->current, color_output ? "\033[0m" : "",
-            automatic ? "  Auto" : maximum ? "  Max" : "");
+        if (terminal_output) {
+            print_terminal_fan(fan, &before[index], maximum, false);
+            continue;
+        }
+        printf("Fan %d  %5.0f -> %5.0f RPM%s", fan->number + 1, before[index].current,
+            fan->current, automatic ? "  Auto" : maximum ? "  Max" : "");
         if (!automatic && fabsf(fan->current - fan->target) > kTargetTolerance) {
             printf("  (target %.0f)", fan->target);
         }
@@ -886,6 +952,21 @@ static void force_fans(io_connect_t connection, const FanState *fans, int count,
 }
 
 static void usage(void) {
+    if (terminal_output) {
+        const char *accent = color_output ? "\033[1;33m" : "";
+        const char *bold = color_output ? "\033[1m" : "";
+        const char *reset = color_output ? "\033[0m" : "";
+        printf("%s◉  fanctl%s\n\n", accent, reset);
+        printf("  %sstat%s     Read fan speeds and modes\n", bold, reset);
+        printf("  %s<RPM>%s    Set all fans to this speed\n", bold, reset);
+        printf("  %smax%s      Use each fan’s maximum\n", bold, reset);
+        printf("  %sauto%s     Return control to macOS\n\n", bold, reset);
+        puts("  stat --verbose     Targets, ranges and raw modes\n"
+             "  --wait             Observe RPM for up to 8s after changes\n"
+             "  --non-interactive  Never prompt for a password\n"
+             "  --no-color         Disable color");
+        return;
+    }
     puts("fanctl — macOS fan inspection and temporary control\n"
          "\n"
          "Usage:\n"
@@ -989,6 +1070,19 @@ static void run_elevated(int argc, char *argv[]) {
 }
 
 int main(int argc, char *argv[]) {
+    bool no_color = getenv("NO_COLOR") != NULL;
+    for (int index = 1; index < argc; index++) {
+        if (strcmp(argv[index], "--no-color") == 0) no_color = true;
+    }
+    const char *term = getenv("TERM");
+    terminal_output = isatty(STDOUT_FILENO) && (!term || strcmp(term, "dumb") != 0);
+    color_output = terminal_output && !no_color;
+    if (terminal_output) {
+        struct winsize size = {0};
+        terminal_columns = ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) == 0 && size.ws_col
+            ? size.ws_col : 80;
+    }
+
     if (argc == 1 || strcmp(argv[1], "help") == 0 || strcmp(argv[1], "--help") == 0 ||
         strcmp(argv[1], "-h") == 0) {
         usage();
@@ -997,7 +1091,6 @@ int main(int argc, char *argv[]) {
 
     bool wait = false;
     bool verbose = false;
-    bool no_color = getenv("NO_COLOR") != NULL;
 
     const char *command = argv[1];
     bool want_stat = strcmp(command, "stat") == 0;
@@ -1009,7 +1102,7 @@ int main(int argc, char *argv[]) {
         return EXIT_FAILURE;
     }
     for (int index = 2; index < argc; index++) {
-        if (strcmp(argv[index], "--no-color") == 0) no_color = true;
+        if (strcmp(argv[index], "--no-color") == 0) continue;
         else if (!want_stat && strcmp(argv[index], "--wait") == 0) wait = true;
         else if (want_stat && strcmp(argv[index], "--verbose") == 0) verbose = true;
         else if (strcmp(argv[index], "--non-interactive") == 0) continue;
@@ -1023,11 +1116,7 @@ int main(int argc, char *argv[]) {
         stat_argv = argv;
     }
 
-    const char *term = getenv("TERM");
-    terminal_output = isatty(STDOUT_FILENO) && (!term || strcmp(term, "dumb") != 0);
-    color_output = terminal_output && !no_color;
-    animate_progress = !want_stat && terminal_output && isatty(STDERR_FILENO) &&
-        !reduce_motion();
+    progress_terminal = !want_stat && terminal_output && isatty(STDERR_FILENO);
 
     io_connect_t connection = open_smc();
     if (want_stat) {
