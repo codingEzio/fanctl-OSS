@@ -3,11 +3,11 @@
   "project": "fanctl",
   "license": "GPL-2.0-only; upstream retained terms in THIRD_PARTY_NOTICES.md",
   "author": "codingEzio",
-  "scope": "Selected CLI source, documentation, original mark and non-privileged tests. No private workspace, credentials, helper, OS configuration or original Git history. The CLI reports measured RPM and verifies temporary control changes with bounded handoff and recovery.",
+  "scope": "Selected CLI source, documentation, original mark and non-privileged tests. No private workspace, credentials, helper, OS configuration or original Git history. The CLI distinguishes usage, measured RPM and requested controller targets, and verifies temporary control changes with bounded handoff and recovery.",
   "files": [
     {
       "path": "fanctl.c",
-      "sha256": "5a95833f1ea23278cd25ebb964a5fed70d561a2a99e622350bb142e57be78700"
+      "sha256": "bb5b63b178f53e2ca3a98eec054b27435c7720f7125ac78159f51205998d6297"
     },
     {
       "path": "tests/fanctl_test.c",
@@ -15,7 +15,7 @@
     },
     {
       "path": "tests/fanctl_test.sh",
-      "sha256": "62e8bfa52466bf264f99a44665075c83c6732a1fc8b1de4d2ef22853f1373b19"
+      "sha256": "eb5bee0a1f87bcdd55f86e561444e6fe64ab5617212d004da0604744f8b350f6"
     },
     {
       "path": "tests/recovery_test.c",
@@ -39,31 +39,31 @@
     },
     {
       "path": "README.md",
-      "sha256": "f0cd61d8f4348b8965e076ddc4484333aca584eaba6189a3f12281bddc971b0e"
+      "sha256": "0c278cadbf3a0fc12fa160fdf3817d62f0981a232b07a320c510093925a3cdc2"
     },
     {
       "path": "README.zh-Hans.md",
-      "sha256": "0e366a4e64181c6dbff9855570799b519aac2e43a2fb036c0ae571759f030f04"
+      "sha256": "4c5c21707b1609a3ec6962913ba4f0e817d0e2496621c3021e6a953dbfe2ded2"
     },
     {
       "path": "README.zh-Hant.md",
-      "sha256": "8b9171342951b08a6268defee82825bc323aae8b3d9c50b68abb4bb673c3cdeb"
+      "sha256": "e23a5beb3d09458f82d608e80677bb9585d64dc7e23b62b62e7202645e70e8aa"
     },
     {
       "path": "README.ja.md",
-      "sha256": "0c28dc187b41cfc0a71c4634dbd0dc4d011a4207a0b09f15c97890cdccd31f51"
+      "sha256": "ea927aeb4e156735b76835341124d079ded1e4cd800d4d60953a1437ed486902"
     },
     {
       "path": "README.ko.md",
-      "sha256": "8c620ce5f44d5710a8a40c1d5de8bda6062e4e37de64a6b2512d18121cea5471"
+      "sha256": "b0e0e984ca43689159d246ac02b7f5b0e00e17e3e082dd064468a4356b859e6a"
     },
     {
       "path": "README.es.md",
-      "sha256": "cd220db411a7acfdf689c34e4507fbd3aef412a7b1cb0a74d3186a02d6b7dd86"
+      "sha256": "81711ac7b87cc5ee2d0e4ce81a497b29d63a11fc56538c786a253e0f8188d7f8"
     },
     {
       "path": "fan_jobs.h",
-      "sha256": "afa348775b3697ed5f3ce0d0cbf3fd4f80ac3539408e65f492c5611b0ccc1871"
+      "sha256": "07255faa410ae14406b7c4ad18b530c45db2dd3b874913d4cef894f12bcad509"
     },
     {
       "path": "tests/jobs_test.c",

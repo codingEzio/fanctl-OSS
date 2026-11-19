@@ -16,14 +16,14 @@ fanctl max        # each fan's own maximum
 fanctl auto       # hand control back to macOS
 ```
 
-Ejecuta `fanctl` o `fanctl stat` para ver las RPM actuales de cada ventilador. La velocidad debe estar dentro del rango de todos los ventiladores. `max` usa el máximo de cada uno.
+Usa `fanctl` para ver la ayuda y `fanctl stat` para ver las RPM actuales. El objetivo numérico debe ser válido para todos los ventiladores. `max` muestra las RPM actuales y el máximo de cada ventilador.
 
 ```text
 Fan 1  2000 RPM
 Fan 2  2016 RPM
 ```
 
-Con el acceso sin contraseña activado, fanctl muestra las RPM actuales y devuelve el control de inmediato. Un proceso temporal aplica y verifica el último ajuste solicitado. Un fallo se muestra en la siguiente consulta con `fanctl`. La transición puede tardar varios segundos si los ventiladores estaban parados. Sin esta configuración, el comando espera la confirmación.
+Con el acceso sin contraseña, un nuevo objetivo aparece como `queued` y el terminal queda libre. `set` indica que el controlador confirmó el ajuste. El motor aún puede estar acelerando. Un proceso temporal aplica la última solicitud. Consulta las RPM medidas y los fallos con `fanctl stat`. Sin acceso sin contraseña, el comando espera la confirmación.
 
 ## Compilar la fuente seleccionada
 

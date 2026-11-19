@@ -17,6 +17,8 @@ fi
 xcrun clang -std=c17 -O3 -Wall -Wextra -Werror -framework IOKit -framework CoreFoundation "$source" -o "$temporary/fanctl"
 "$temporary/fanctl" --help > "$temporary/help"
 grep -q 'fanctl <RPM>' "$temporary/help"
+"$temporary/fanctl" > "$temporary/bare"
+cmp "$temporary/help" "$temporary/bare"
 if "$temporary/fanctl" invalid > "$temporary/invalid" 2>&1; then exit 1; fi
 for mode in 0 1; do
   xcrun clang -std=c17 -O2 -Wall -Wextra -Werror -framework IOKit -framework CoreFoundation \
@@ -62,10 +64,16 @@ for scenario in optional-metadata-transport-error optional-read-transport-error;
 done
 xcrun clang -std=c17 -O2 -Wall -Wextra -Werror -framework IOKit -framework CoreFoundation \
   "-DFANCTL_SOURCE_INCLUDE=$include" "$script_dir/recovery_test.c" -o "$temporary/recovery"
-for command in stat 2500 max auto; do
-  test "$("$temporary/recovery" cli "$command")" = 'Fan 1  2000 RPM
+measured='Fan 1  2000 RPM
 Fan 2  2000 RPM'
-done
+test "$("$temporary/recovery" cli stat)" = "$measured"
+test "$("$temporary/recovery" cli 2500)" = "Target 2500 RPM set
+$measured"
+test "$("$temporary/recovery" cli max)" = 'Maximum targets set
+Fan 1  2000 RPM now  /  6000 RPM max
+Fan 2  2000 RPM now  /  6000 RPM max'
+test "$("$temporary/recovery" cli auto)" = "macOS auto control active
+$measured"
 for scenario in success max-success auto-success auto-optional-missing force-optional-missing \
   preflight-error preflight-optional-error preexisting-force transport-after-write partial-recovery \
   status-error auto-partial optional-disappears missing-optional-after-write rpm-overflow invalid-range \

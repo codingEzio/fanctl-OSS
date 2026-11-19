@@ -720,6 +720,24 @@ static void print_rpm(const FanState *fans, int count) {
     }
 }
 
+/* The current sample and the requested controller target are different values. */
+static void print_change(const FanState *fans, int count, bool automatic, bool maximum,
+    int rpm, bool queued) {
+    if (automatic) {
+        puts(queued ? "macOS auto control requested" : "macOS auto control active");
+    } else if (maximum) {
+        puts(queued ? "Maximum targets queued" : "Maximum targets set");
+        for (int i = 0; i < count; i++) {
+            printf("Fan %d  %.0f RPM now  /  %.0f RPM max\n",
+                fans[i].number + 1, fans[i].current, roundf(fans[i].maximum));
+        }
+        return;
+    } else {
+        printf("Target %d RPM %s\n", rpm, queued ? "queued" : "set");
+    }
+    print_rpm(fans, count);
+}
+
 static void print_status(io_connect_t connection) {
     FanState fans[10];
     int count = fan_count(connection);
@@ -758,7 +776,7 @@ static void finish_change(io_connect_t connection, FanState *fans, int count,
     }
     check_interrupted();
     force_recovery.armed = false;
-    print_rpm(fans, count);
+    print_change(fans, count, automatic, maximum, rpm, false);
 }
 
 static int parse_rpm(const char *text) {
@@ -835,8 +853,8 @@ static void force_fans(io_connect_t connection, const FanState *fans, int count,
 
 static void usage(void) {
     puts("Usage:\n"
-         "  fanctl stat    Read current RPM (also: fanctl)\n"
-         "  fanctl <RPM>   Set all fans\n"
+         "  fanctl stat    Read current RPM\n"
+         "  fanctl <RPM>   Set one target for all fans\n"
          "  fanctl max     Set each fan to its maximum\n"
          "  fanctl auto    Return control to macOS");
 }
@@ -932,11 +950,12 @@ int main(int argc, char *argv[]) {
         fcntl(4, F_SETFD, FD_CLOEXEC);
         return work_jobs(3,4);
     }
-    const char *command = argc == 1 ? "stat" : argv[1];
-    if (argc == 2 && (!strcmp(command, "help") || !strcmp(command, "--help") || !strcmp(command, "-h"))) {
+    if (argc == 1 || (argc == 2 && (!strcmp(argv[1], "help") ||
+        !strcmp(argv[1], "--help") || !strcmp(argv[1], "-h")))) {
         usage();
         return EXIT_SUCCESS;
     }
+    const char *command = argv[1];
     bool stat = !strcmp(command, "stat");
     bool maximum = !strcmp(command, "max");
     bool automatic = !strcmp(command, "auto");
@@ -964,7 +983,7 @@ int main(int argc, char *argv[]) {
         FanState fans[10];
         int count = all_fans(connection, fans);
         if (!automatic && already_applied(fans, count, maximum, rpm)) {
-            print_rpm(fans, count);
+            print_change(fans, count, false, maximum, rpm, false);
         } else {
             if (user) {
                 IOServiceClose(connection);

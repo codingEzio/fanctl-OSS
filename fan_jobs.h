@@ -176,7 +176,8 @@ static void submit_job(io_connect_t connection, const char *command, bool maximu
         }
     }
     if (lock >= 0) (void)previous_job_failed(dir);
-    if (lock < 0 || automatic || !already_applied(fans, count, maximum, rpm)) {
+    bool queued = lock < 0 || automatic || !already_applied(fans, count, maximum, rpm);
+    if (queued) {
         char number[16];
         if (!maximum && !automatic) {
             snprintf(number, sizeof(number), "%d", rpm);
@@ -191,5 +192,5 @@ static void submit_job(io_connect_t connection, const char *command, bool maximu
     if (lock >= 0) close(lock);
     close(gate);
     close(dir);
-    print_rpm(fans, count);
+    print_change(fans, count, automatic, maximum, rpm, queued);
 }

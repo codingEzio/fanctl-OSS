@@ -16,14 +16,14 @@ fanctl max        # each fan's own maximum
 fanctl auto       # hand control back to macOS
 ```
 
-Run `fanctl` or `fanctl stat` to read each fan’s current RPM. A numeric target must fit every fan’s range. `max` uses each fan’s own maximum.
+Run `fanctl` for usage and `fanctl stat` for current RPM. A numeric target must fit every fan. `max` shows each fan’s current RPM and its own maximum.
 
 ```text
 Fan 1  2000 RPM
 Fan 2  2016 RPM
 ```
 
-With passwordless control enabled, fanctl prints the current RPM and immediately returns. A short-lived worker applies the latest requested setting and verifies the controller. `fanctl` shows any failure on the next read. When the fans have stopped, taking control can take several seconds. Without passwordless setup, changes wait for verification.
+With passwordless control, a new target is marked `queued`; the terminal is immediately available. `set` means the controller target was verified. The motor may still be accelerating. A short-lived worker applies the latest request. Check `fanctl stat` for RPM and any background failure. Without passwordless control, the change waits for verification.
 
 ## Build the selected source
 

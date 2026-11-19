@@ -16,14 +16,14 @@ fanctl max        # each fan's own maximum
 fanctl auto       # hand control back to macOS
 ```
 
-直接執行 `fanctl` 或 `fanctl stat` 查看各風扇目前的 RPM。數字目標須在每個風扇的允許範圍內，`max` 使用各自上限。
+執行 `fanctl` 查看用法，`fanctl stat` 查看目前的 RPM。數字目標須適用於每個風扇。`max` 並列顯示各風扇的目前轉速和各自上限。
 
 ```text
 Fan 1  2000 RPM
 Fan 2  2016 RPM
 ```
 
-啟用免密調速後，指令立即顯示目前的實測 RPM 並返回。背景程序套用最後一次請求，讀回控制器確認後退出。若失敗，下次執行 `fanctl` 會顯示原因。風扇停轉後重新接管可能需數秒。未設定免密時，調速指令等控制器確認後返回。
+免密調速時，新目標顯示 `queued` 並立即返回終端機；`set` 表示控制器目標已確認，風扇仍可繼續加速。背景程序執行最後一次請求。用 `fanctl stat` 查看實測轉速及背景錯誤。未設定免密時，指令等目標確認後返回。
 
 ## 建置精選來源
 
