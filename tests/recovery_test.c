@@ -279,11 +279,21 @@ int main(int argc, char **argv) {
             is_case("fractional-fan-count") || is_case("large-fan-count") ||
             is_case("auto-fs-format") || is_case("short-auto")) restore_auto(0);
         else if (is_case("invalid-mode") || is_case("invalid-actual")) (void)read_fan(0, 0);
-        else force_fans(0, fans, 2, !is_case("max-success"),
-            is_case("rpm-overflow") ? 17000 : 2500);
+        else {
+            force_fans(0, fans, 2, !is_case("max-success"), is_case("rpm-overflow") ? 17000 : 2500);
+            if (is_case("fast-receipt") || is_case("wait-receipt") || is_case("lost-control")) {
+                if (is_case("lost-control")) keys[kMode1].bytes[0] = 3;
+                finish_change(0, fans, 2, false, false, 2500, is_case("wait-receipt"));
+            }
+        }
     }
     bool pass = false;
-    if (is_case("success")) {
+    if (is_case("fast-receipt") || is_case("wait-receipt")) {
+        pass = exit_status == 0 && !force_recovery.armed && state(1, 3, 1, 1) &&
+            sleeps == (is_case("wait-receipt") ? kSpeedAttempts - 1 : 0);
+    } else if (is_case("lost-control")) {
+        pass = exit_status == EXIT_FAILURE && state(0, 0, 0, 3);
+    } else if (is_case("success")) {
         pass = exit_status == 0 && state(1, 3, 1, 1) &&
             keys[kTarget0].bytes[0] == 0x27 && keys[kTarget1].bytes[0] == 0x27;
     } else if (is_case("protected-handoff") || is_case("delayed-handoff")) {

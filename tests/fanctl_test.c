@@ -41,6 +41,7 @@ static int fake_execv(const char *path, char *const arguments[]) {
     printf("authorize=%s executable=%s argument=%s", path, arguments[executable], arguments[executable + 1]);
     for (int index = executable + 2; arguments[index]; index++) {
         if (strcmp(arguments[index], "--no-color") && strcmp(arguments[index], "--non-interactive") &&
+            strcmp(arguments[index], "--wait") &&
             (strcmp(arguments[executable + 1], "stat") || strcmp(arguments[index], "--verbose"))) _Exit(81);
         printf(" %s", arguments[index]);
     }
@@ -52,9 +53,11 @@ static int fake_execv(const char *path, char *const arguments[]) {
     fflush(stdout);
     _Exit(0);
 }
-static kern_return_t forbidden_smc(mach_port_t port, CFDictionaryRef matching,
+static bool testing_stat;
+static kern_return_t denied_status(mach_port_t port, CFDictionaryRef matching,
     io_iterator_t *iterator) {
     (void)port; (void)matching; (void)iterator;
+    if (testing_stat) return getenv("FANCTL_TEST_IO_ERROR") ? kIOReturnError : kIOReturnNotPrivileged;
     fputs("SMC must not run during the authorization test\n", stderr);
     _Exit(80);
 }
@@ -67,10 +70,13 @@ static kern_return_t forbidden_smc(mach_port_t port, CFDictionaryRef matching,
 #define fork fake_fork
 #define waitpid fake_waitpid
 #endif
-#define IOServiceGetMatchingServices forbidden_smc
+#define IOServiceGetMatchingServices denied_status
 #ifndef FANCTL_SOURCE_INCLUDE
 #define FANCTL_SOURCE_INCLUDE "../Bin/fanctl.c"
 #endif
 #include FANCTL_SOURCE_INCLUDE
 #undef main
-int main(int argc, char *argv[]) { return fanctl_command_main(argc, argv); }
+int main(int argc, char *argv[]) {
+    testing_stat = argc > 1 && strcmp(argv[1], "stat") == 0;
+    return fanctl_command_main(argc, argv);
+}

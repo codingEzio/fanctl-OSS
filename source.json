@@ -3,23 +3,23 @@
   "project": "fanctl",
   "license": "GPL-2.0-only; upstream retained terms in THIRD_PARTY_NOTICES.md",
   "author": "codingEzio",
-  "scope": "Selected CLI source, documentation, original mark and non-privileged tests. No private workspace, credentials, helper, OS configuration or original Git history. Modified by fanctl contributors on 2026-11-07 to validate controller data, preflight targets, and attempt diagnosed, bounded best-effort automatic recovery. Modified on 2026-11-15 to wait for thermal-manager handoff, recognize system-controlled automatic mode, and show measured before/after RPM with bounded terminal progress, signal recovery and existing sudo-cache reuse without password storage. Modified to create the system cache through native sudo askpass and support strictly noninteractive authorization.",
+  "scope": "Selected CLI source, documentation, original mark and non-privileged tests. No private workspace, credentials, helper, OS configuration or original Git history. Modified by fanctl contributors on 2026-11-07 to validate controller data, preflight targets, and attempt diagnosed, bounded best-effort automatic recovery. Modified on 2026-11-15 to wait for thermal-manager handoff, recognize system-controlled automatic mode, and show measured before/after RPM with bounded terminal progress, signal recovery and existing sudo-cache reuse without password storage. Modified to create the system cache through native sudo askpass and support strictly noninteractive authorization. Modified on 2026-11-19 to read status directly and make motor observation optional after verified control.",
   "files": [
     {
       "path": "fanctl.c",
-      "sha256": "49fdfb786cb88669c97915f11befcca2d17c1bf25705389f40d33a83363e8061"
+      "sha256": "7ac57f612135a3e3fe2e2e4e05d64927f18da049a04be9a2137fecdf877c8d80"
     },
     {
       "path": "tests/fanctl_test.c",
-      "sha256": "7163f2a76c3cb30e2eb0ba669463b4bd36fc5f1bb8e3465c4a3bcf1cf6b044c9"
+      "sha256": "cc3839cc56aa526f6e7cd2cbe4468a40a6c3c7da251007368ff2ac40780edece"
     },
     {
       "path": "tests/fanctl_test.sh",
-      "sha256": "574f3863b262cf26e9993aaecf08c989b78ac51ef88868446f77b3ab7c558f5a"
+      "sha256": "f6b1c906af0af54235d1c419951376e21f350a527448e8ae8bbb8d2b5adae978"
     },
     {
       "path": "tests/recovery_test.c",
-      "sha256": "1bd9c05721588f744cf795e2794abd17f594c9d01959915dd00035820001777e"
+      "sha256": "d9026541bc5d4d49bdb7b00ba56dee3195c7b111410af9ffced3e0a9165c6893"
     },
     {
       "path": "tests/smc_result_test.c",
@@ -39,27 +39,27 @@
     },
     {
       "path": "README.md",
-      "sha256": "67e557f44c3f8fd34db9515dba663ffbcd4f70d2f2944ddf50e56c25eb6aa9ab"
+      "sha256": "367e35cdc6647929e168da933d665a322cff79710aac7b30d87ca75e5201d9af"
     },
     {
       "path": "README.zh-Hans.md",
-      "sha256": "868c9800771c34c1277a472b83ad137f31e26a075551e0a37d20909cb401caa7"
+      "sha256": "1eb2d51743b61b30c817f3708019e125087424df98d608f3782f668b427db9cc"
     },
     {
       "path": "README.zh-Hant.md",
-      "sha256": "54bdcdf49643fc5915fb772e6a106bbd99bf324340734e0028f2344e5de72233"
+      "sha256": "9727122e9902021a7d45be447c7398640e79639f322707602571b994ac044412"
     },
     {
       "path": "README.ja.md",
-      "sha256": "096e49d5a68016179c7fd1ce9dc92fe845c0eb52113628dd66579929d78242e1"
+      "sha256": "516901936de6956c85456a9fe8cc73cab24ad48c7c027c844387188a50f2f418"
     },
     {
       "path": "README.ko.md",
-      "sha256": "12c37edd41f74a8c9b5c25dd08e4d908bad5ec41c4552f9b28887e7106d910c6"
+      "sha256": "3e45c4cacad678f3a5eec91af3df4ee21014cccbac1b1a8396cf3d562e4f5cc2"
     },
     {
       "path": "README.es.md",
-      "sha256": "ae4973b3a390e1e8dcea288a2537255853978141ee41dddb0e41831ae0ac4d59"
+      "sha256": "53a830a3cd5e5ccdf3991a3ef267cacf8521ab478da991c616d4567668965a9a"
     }
   ],
   "runtime": "On one Mac, identical CLI source was tested with a temporary fan target and return to automatic mode. Recovery after a write failure was only simulated; other Macs are unverified."

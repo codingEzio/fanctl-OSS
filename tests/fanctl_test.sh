@@ -35,6 +35,11 @@ for mode in 0 1; do
   test "$output" = "authorize=$expected executable=/fixture/bin/fanctl argument=3000 --no-color$suffix"
   output=$("$temporary/authorization-$mode" stat --non-interactive)
   test "$output" = 'authorize=/usr/bin/sudo executable=/fixture/bin/fanctl argument=stat --non-interactive noninteractive=1'
+  output=$("$temporary/authorization-$mode" 3000 --wait)
+  test "$output" = "authorize=$expected executable=/fixture/bin/fanctl argument=3000 --wait$suffix"
+  if "$temporary/authorization-$mode" stat --wait > "$temporary/invalid-option" 2>&1; then exit 1; fi
+  if FANCTL_TEST_IO_ERROR=1 "$temporary/authorization-$mode" stat > "$temporary/io-error" 2>&1; then exit 1; fi
+  grep -q 'Cannot find AppleSMC service' "$temporary/io-error"
   if "$temporary/authorization-$mode" 3000 --verbose > "$temporary/invalid-option" 2>&1; then exit 1; fi
   if [ "$mode" = 1 ]; then
     output=$(FANCTL_TEST_CACHED=1 "$temporary/authorization-$mode" 3000)
@@ -77,9 +82,13 @@ for scenario in success max-success auto-success auto-optional-missing force-opt
   optional-vanishes-before-write auto-fs-format type-changed deferred-auto prewrite-handshake \
   recovery-smc-error delayed-auto persistent-nonzero verification-key-vanishes \
   protected-handoff delayed-handoff protected-timeout mode-other-error auto-system target-timeout \
-  auto-system-race cancel-handoff cancel-delayed-unlock; do
+  auto-system-race cancel-handoff cancel-delayed-unlock fast-receipt wait-receipt lost-control; do
   "$temporary/recovery" "$scenario" > "$temporary/recovery-output" 2> "$temporary/recovery-$scenario"
 done
+for scenario in fast-receipt wait-receipt; do
+  "$temporary/recovery" "$scenario" | grep -q '2000 RPM  (target 2500)'
+done
+grep -q 'automatic mode verified' "$temporary/recovery-lost-control"
 grep -q 'automatic mode verified' "$temporary/recovery-transport-after-write"
 grep -q 'automatic mode verified' "$temporary/recovery-status-error"
 grep -q 'automatic mode verified' "$temporary/recovery-missing-optional-after-write"

@@ -5,6 +5,7 @@
 // Modified by fanctl contributors on 2026-11-07: preflight, diagnostic and
 // best-effort automatic-mode recovery when a forced fan change fails.
 // Modified on 2026-11-15: wait for thermal-manager handoff and recognize system mode.
+// Modified on 2026-11-19: direct status reads and optional motor observation.
 
 #include <CoreFoundation/CoreFoundation.h>
 #include <errno.h>
@@ -168,7 +169,16 @@ static void check_interrupted(void) {
     if (interrupted) fail("Cancelled");
 }
 
+/* Only an unprivileged, read-only status command may retry an IOKit denial.
+   All rows are buffered until the full sample succeeds, so a retry prints once. */
+static int stat_argc;
+static char **stat_argv;
+static void run_elevated(int argc, char *argv[]) __attribute__((noreturn));
+
 static void fail_code(const char *action, kern_return_t code) {
+    if (stat_argv && (code == kIOReturnNotPrivileged || code == kIOReturnNotPermitted)) {
+        run_elevated(stat_argc, stat_argv);
+    }
     char message[160];
     snprintf(message, sizeof(message), "%s: 0x%08x", action, (unsigned int)code);
     fail(message);
@@ -626,24 +636,29 @@ static SMCValue read_fan_key(io_connect_t connection, int number, const char suf
     return read_key(connection, key);
 }
 
-static FanState read_fan(io_connect_t connection, int number) {
-    FanState fan = {.number = number};
-    SMCValue value = read_fan_key(connection, number, "Ac");
-    fan.current = numeric_value(&value);
-    value = read_fan_key(connection, number, "Mn");
-    fan.minimum = numeric_value(&value);
-    value = read_fan_key(connection, number, "Mx");
-    fan.maximum = numeric_value(&value);
-    value = read_fan_key(connection, number, "Tg");
-    fan.target = numeric_value(&value);
-    value = read_fan_key(connection, number, "Md");
+static float fan_rpm(io_connect_t connection, int number, const char suffix[2]) {
+    SMCValue value = read_fan_key(connection, number, suffix);
+    float rpm = numeric_value(&value);
+    if (!isfinite(rpm) || rpm < 0) fail("Invalid fan RPM data");
+    return rpm;
+}
+
+static int fan_mode(io_connect_t connection, int number) {
+    SMCValue value = read_fan_key(connection, number, "Md");
     float mode = numeric_value(&value);
     if (!isfinite(mode) || mode < 0 || (double)mode > (double)INT32_MAX ||
         floorf(mode) != mode) fail("Invalid fan mode");
-    if (!isfinite(fan.current) || !isfinite(fan.target) || !isfinite(fan.minimum) ||
-        !isfinite(fan.maximum) || fan.current < 0 || fan.target < 0 || fan.minimum < 0 ||
-        fan.minimum > fan.maximum) fail("Invalid fan RPM data");
-    fan.mode = (int)mode;
+    return (int)mode;
+}
+
+static FanState read_fan(io_connect_t connection, int number) {
+    FanState fan = {.number = number};
+    fan.current = fan_rpm(connection, number, "Ac");
+    fan.minimum = fan_rpm(connection, number, "Mn");
+    fan.maximum = fan_rpm(connection, number, "Mx");
+    fan.target = fan_rpm(connection, number, "Tg");
+    fan.mode = fan_mode(connection, number);
+    if (fan.minimum > fan.maximum) fail("Invalid fan RPM data");
     return fan;
 }
 
@@ -757,14 +772,19 @@ static void print_status(io_connect_t connection, bool verbose) {
 }
 
 static void finish_change(io_connect_t connection, const FanState *before, int count,
-    bool automatic, bool maximum, int rpm) {
+    bool automatic, bool maximum, int rpm, bool wait) {
     FanState after[10];
     for (int attempt = 0; attempt < kSpeedAttempts; attempt++) {
         check_interrupted();
-        if (all_fans(connection, after) != count) fail("Fan count changed during control");
+        if (fan_count(connection) != count) fail("Fan count changed during control");
         bool reached = true;
         for (int index = 0; index < count; index++) {
-            const FanState *fan = &after[index];
+            FanState *fan = &after[index];
+            fan->number = before[index].number;
+            fan->maximum = before[index].maximum;
+            fan->current = fan_rpm(connection, fan->number, "Ac");
+            fan->target = fan_rpm(connection, fan->number, "Tg");
+            fan->mode = fan_mode(connection, fan->number);
             float target = automatic ? fan->target : maximum ? before[index].maximum : (float)rpm;
             if (!automatic && (fan->mode != 1 || fabsf(fan->target - target) > kTargetTolerance)) {
                 fail("macOS changed fan control before the command completed");
@@ -772,10 +792,11 @@ static void finish_change(io_connect_t connection, const FanState *before, int c
             if (automatic && fan->mode != 0 && fan->mode != 3) fail("Automatic mode was lost");
             if (fabsf(fan->current - target) > kTargetTolerance) reached = false;
         }
-        if (reached || attempt + 1 == kSpeedAttempts) break;
+        if (!wait || reached || attempt + 1 == kSpeedAttempts) break;
         progress_note("Reading actual RPM");
         usleep(kModePollMicroseconds);
     }
+    check_interrupted();
     progress_clear();
     force_recovery.armed = false;
     for (int index = 0; index < count; index++) {
@@ -868,12 +889,13 @@ static void usage(void) {
     puts("fanctl — macOS fan inspection and temporary control\n"
          "\n"
          "Usage:\n"
-         "  fanctl max\n"
-         "  fanctl auto\n"
-         "  fanctl <RPM>\n"
+         "  fanctl max [--wait]\n"
+         "  fanctl auto [--wait]\n"
+         "  fanctl <RPM> [--wait]\n"
          "  fanctl stat [--verbose]\n"
          "\n"
          "Options:\n"
+         "  --wait             Observe measured RPM for up to 8s after confirmation\n"
          "  --no-color         Disable color (also: NO_COLOR)\n"
          "  --non-interactive  Never open a password prompt");
 }
@@ -928,7 +950,7 @@ static void run_elevated(int argc, char *argv[]) {
         "%.*s/admin_authorize", (int)(separator - resolved), resolved) >= (int)sizeof(authorizer)) {
         fail("Cannot locate the configured administrator helper");
     }
-    bool cached = cached_authorization();
+    bool cached = !noninteractive && cached_authorization();
     const char *ssh_connection = getenv("SSH_CONNECTION");
     const char *ssh_client = getenv("SSH_CLIENT");
     bool incoming_ssh = (ssh_connection && ssh_connection[0]) || (ssh_client && ssh_client[0]);
@@ -973,6 +995,7 @@ int main(int argc, char *argv[]) {
         return EXIT_SUCCESS;
     }
 
+    bool wait = false;
     bool verbose = false;
     bool no_color = getenv("NO_COLOR") != NULL;
 
@@ -987,6 +1010,7 @@ int main(int argc, char *argv[]) {
     }
     for (int index = 2; index < argc; index++) {
         if (strcmp(argv[index], "--no-color") == 0) no_color = true;
+        else if (!want_stat && strcmp(argv[index], "--wait") == 0) wait = true;
         else if (want_stat && strcmp(argv[index], "--verbose") == 0) verbose = true;
         else if (strcmp(argv[index], "--non-interactive") == 0) continue;
         else { usage(); return EXIT_FAILURE; }
@@ -994,13 +1018,15 @@ int main(int argc, char *argv[]) {
 
     int rpm = want_set ? parse_rpm(command) : 0;
     if (geteuid() != 0) {
-        run_elevated(argc, argv);
+        if (!want_stat) run_elevated(argc, argv);
+        stat_argc = argc;
+        stat_argv = argv;
     }
 
     const char *term = getenv("TERM");
     terminal_output = isatty(STDOUT_FILENO) && (!term || strcmp(term, "dumb") != 0);
     color_output = terminal_output && !no_color;
-    animate_progress = terminal_output && isatty(STDERR_FILENO) &&
+    animate_progress = !want_stat && terminal_output && isatty(STDERR_FILENO) &&
         !reduce_motion();
 
     io_connect_t connection = open_smc();
@@ -1017,7 +1043,7 @@ int main(int argc, char *argv[]) {
         int count = all_fans(connection, fans);
         if (want_set || want_max) force_fans(connection, fans, count, want_set, rpm);
         else restore_auto(connection);
-        finish_change(connection, fans, count, want_auto, want_max, rpm);
+        finish_change(connection, fans, count, want_auto, want_max, rpm, wait);
     }
 
     IOServiceClose(connection);
