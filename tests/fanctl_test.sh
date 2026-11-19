@@ -3,7 +3,7 @@
 # Modified on 2026-11-15: handoff, signal recovery and cached authorization.
 set -eu
 unset NO_COLOR
-unset SSH_CONNECTION SSH_CLIENT
+unset SSH_CONNECTION SSH_CLIENT SSH_TTY TMUX STY
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 temporary=$(/usr/bin/mktemp -d /private/tmp/delete_after_use_fanctl_test.XXXXXX)
 trap '/bin/rm -rf "$temporary"' EXIT HUP INT TERM
@@ -22,33 +22,22 @@ for mode in 0 1; do
   xcrun clang -std=c17 -O2 -Wall -Wextra -Werror -framework IOKit -framework CoreFoundation \
     "-DFANCTL_SOURCE_INCLUDE=$include" "-DFANCTL_USE_ADJACENT_AUTHORIZER=$mode" \
     "$script_dir/fanctl_test.c" -o "$temporary/authorization-$mode"
-  expected=/usr/bin/sudo
-  suffix=
-  if [ "$mode" = 1 ]; then suffix=' askpass=1'; fi
+  route=terminal
+  if [ "$mode" = 1 ]; then route=local; fi
+  binary="$temporary/authorization-$mode"
   for command in stat auto max 3000; do
-    output=$("$temporary/authorization-$mode" "$command")
-    test "$output" = "authorize=$expected executable=/fixture/bin/fanctl argument=$command$suffix"
+    test "$("$binary" "$command")" = "$route /fixture/bin/fanctl $command"
+    test "$(FANCTL_TEST_NO_TTY=1 "$binary" "$command")" = "no-prompt /fixture/bin/fanctl $command"
   done
-  output=$("$temporary/authorization-$mode" stat --verbose)
-  test "$output" = "authorize=$expected executable=/fixture/bin/fanctl argument=stat --verbose$suffix"
-  output=$(NO_COLOR=1 "$temporary/authorization-$mode" 3000)
-  test "$output" = "authorize=$expected executable=/fixture/bin/fanctl argument=3000 --no-color$suffix"
-  output=$("$temporary/authorization-$mode" stat --non-interactive)
-  test "$output" = 'authorize=/usr/bin/sudo executable=/fixture/bin/fanctl argument=stat --non-interactive noninteractive=1'
-  output=$("$temporary/authorization-$mode" 3000 --wait)
-  test "$output" = "authorize=$expected executable=/fixture/bin/fanctl argument=3000 --wait$suffix"
-  if "$temporary/authorization-$mode" stat --wait > "$temporary/invalid-option" 2>&1; then exit 1; fi
-  if FANCTL_TEST_IO_ERROR=1 "$temporary/authorization-$mode" stat > "$temporary/io-error" 2>&1; then exit 1; fi
+  for marker in SSH_CONNECTION SSH_CLIENT SSH_TTY TMUX STY; do
+    test "$(env "$marker=fixture" "$binary" 3000)" = 'terminal /fixture/bin/fanctl 3000'
+  done
+  test "$(FANCTL_TEST_INSTALLED=1 "$binary" 3000)" = "$route /Library/PrivilegedHelperTools/fanctl 3000"
+  for flag in --verbose --wait --non-interactive --no-color; do
+    if "$binary" stat "$flag" > "$temporary/invalid" 2>&1; then exit 1; fi
+  done
+  if FANCTL_TEST_IO_ERROR=1 "$binary" stat > "$temporary/io-error" 2>&1; then exit 1; fi
   grep -q 'Cannot find AppleSMC service' "$temporary/io-error"
-  if "$temporary/authorization-$mode" 3000 --verbose > "$temporary/invalid-option" 2>&1; then exit 1; fi
-  if [ "$mode" = 1 ]; then
-    output=$(FANCTL_TEST_CACHED=1 "$temporary/authorization-$mode" 3000)
-    test "$output" = 'authorize=/usr/bin/sudo executable=/fixture/bin/fanctl argument=3000 noninteractive=1'
-    output=$(SSH_CONNECTION=fixture "$temporary/authorization-$mode" stat)
-    test "$output" = 'authorize=/fixture/bin/admin_authorize executable=/fixture/bin/fanctl argument=stat'
-    if FANCTL_TEST_CACHE_PROBE_ERROR=1 "$temporary/authorization-$mode" 3000 > "$temporary/cache-error" 2>&1; then exit 1; fi
-    grep -q 'Cannot check cached administrator access' "$temporary/cache-error"
-  fi
   if FANCTL_TEST_EXEC_FAIL=1 "$temporary/authorization-$mode" stat > "$temporary/error" 2>&1; then exit 1; fi
   grep -q 'Cannot request administrator access' "$temporary/error"
   if "$temporary/authorization-$mode" -1 > "$temporary/range" 2>&1; then exit 1; fi
@@ -73,11 +62,9 @@ for scenario in optional-metadata-transport-error optional-read-transport-error;
 done
 xcrun clang -std=c17 -O2 -Wall -Wextra -Werror -framework IOKit -framework CoreFoundation \
   "-DFANCTL_SOURCE_INCLUDE=$include" "$script_dir/recovery_test.c" -o "$temporary/recovery"
-test "$("$temporary/recovery" cli stat)" = 'Fan 1   2000 RPM  Auto
-Fan 2   2000 RPM  Auto'
-for option in '' '--wait'; do
-  "$temporary/recovery" cli 2500 ${option:+"$option"} > "$temporary/receipt"
-  grep -q 'Fan 1   2000 ->  2000 RPM  (target 2500)' "$temporary/receipt"
+for command in stat 2500 max auto; do
+  test "$("$temporary/recovery" cli "$command")" = 'Fan 1  2000 RPM
+Fan 2  2000 RPM'
 done
 for scenario in success max-success auto-success auto-optional-missing force-optional-missing \
   preflight-error preflight-optional-error preexisting-force transport-after-write partial-recovery \
@@ -88,12 +75,10 @@ for scenario in success max-success auto-success auto-optional-missing force-opt
   optional-vanishes-before-write auto-fs-format type-changed deferred-auto prewrite-handshake \
   recovery-smc-error delayed-auto persistent-nonzero verification-key-vanishes \
   protected-handoff delayed-handoff protected-timeout mode-other-error auto-system target-timeout \
-  auto-system-race cancel-handoff cancel-delayed-unlock fast-receipt wait-receipt lost-control; do
+  auto-system-race cancel-handoff cancel-delayed-unlock fast-receipt lost-control; do
   "$temporary/recovery" "$scenario" > "$temporary/recovery-output" 2> "$temporary/recovery-$scenario"
 done
-for scenario in fast-receipt wait-receipt; do
-  "$temporary/recovery" "$scenario" | grep -q '2000 RPM  (target 2500)'
-done
+"$temporary/recovery" fast-receipt | grep -qx 'Fan 1  2000 RPM'
 grep -q 'automatic mode verified' "$temporary/recovery-lost-control"
 grep -q 'automatic mode verified' "$temporary/recovery-transport-after-write"
 grep -q 'automatic mode verified' "$temporary/recovery-status-error"
@@ -116,4 +101,8 @@ grep -q 'automatic mode verified' "$temporary/recovery-target-timeout"
 grep -q 'Cancelled' "$temporary/recovery-cancel-handoff"
 grep -q 'automatic mode verified' "$temporary/recovery-cancel-handoff"
 grep -q 'automatic mode verified' "$temporary/recovery-cancel-delayed-unlock"
+mkdir "$temporary/jobs"
+xcrun clang -std=c17 -O2 -Wall -Wextra -Werror -framework IOKit -framework CoreFoundation \
+  "$script_dir/jobs_test.c" -o "$temporary/job-test"
+JOB_TEST_BINARY="$temporary/job-test" "$temporary/job-test" "$temporary/jobs"
 printf 'fanctl: build/help, authorization handoff, synthetic SMC and recovery tests passed; no SMC access.\n'

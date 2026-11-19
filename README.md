@@ -16,16 +16,14 @@ fanctl max        # each fan's own maximum
 fanctl auto       # hand control back to macOS
 ```
 
-`3000`, `max` and `auto` show each fan’s measured RPM before → after. `stat` shows only current RPM and mode; `stat --verbose` adds targets, ranges and raw mode values. Fans are numbered from 1. A numeric target must fit every fan’s allowed range; `max` uses each fan’s own maximum.
+Run `fanctl` or `fanctl stat` to read each fan’s current RPM. A numeric target must fit every fan’s range. `max` uses each fan’s own maximum.
 
 ```text
-Fan 01  ▰▰▰▰▰···········   2000 RPM  Manual
-        from 2000 RPM  ·  target 2500
+Fan 1  2000 RPM
+Fan 2  2016 RPM
 ```
 
-Interactive terminals show measured RPM on an amber-to-red tachometer scaled to each fan’s maximum. Narrow terminals keep the numbers and mode. Redirected output is plain text with no animation. `NO_COLOR` / `--no-color` disables color; `TERM=dumb` disables terminal decoration. The logged-in user’s macOS Reduce Motion setting disables the spinner. The CLI remains English. For automation, `--non-interactive` forbids password prompts and fails when authorization is unavailable.
-
-Control handoff is polled for up to 30 seconds, with all fans handled together. Only the known protected-mode reply (`0x82`) is retried; other write errors remain failures. Mode `3` is system-controlled Auto, not manual. By default, fanctl samples RPM once after verifying control. Add `--wait` to observe motor response for up to eight seconds; final numbers are actual measurements, and an unmet manual target is shown separately. Receiving `SIGINT` / `SIGTERM` during a change attempts verified automatic recovery before exit. Signals must reach fanctl; stopping only an authorization wrapper is not a verified cancellation path.
+With passwordless control enabled, fanctl prints the current RPM and immediately returns. A short-lived worker applies the latest requested setting and verifies the controller. `fanctl` shows any failure on the next read. When the fans have stopped, taking control can take several seconds. Without passwordless setup, changes wait for verification.
 
 ## Build the selected source
 
@@ -40,7 +38,7 @@ sh tests/fanctl_test.sh
 
 ## Permissions and state
 
-`stat` reads directly as the current user. An IOKit permission denial retries through the configured authorizer. Fan changes still require administrator access (standalone builds use `/usr/bin/sudo`). The managed owner build first checks the existing system sudo cache without prompting. While that cache is valid it uses noninteractive sudo; otherwise local requests use `sudo -A` with the adjacent native askpass helper, so sudo creates its normal cache. Incoming SSH retains the helper’s terminal flow. It stores no password and does not change sudo policy. `--help` and invalid arguments do not request access. `FANCTL_USE_ADJACENT_AUTHORIZER` is a build choice: default `0`, owner installer `1`; other values fail compilation. A missing chosen helper fails visibly without silently switching paths. Reuse follows sudo’s session policy; a different terminal session may need its own authorization.
+Status and an exact, already-applied manual target use a read-only check. Changes use system sudo, which reuses its normal authorization. A managed build can supply a local password prompt. SSH uses the controlling terminal. Without a terminal, sudo either has access or returns immediately. An optional root-owned helper at `/Library/PrivilegedHelperTools/fanctl` can be authorized separately for numeric targets, `max` and `auto`.
 
 fanctl exits after each command. A forced target remains until `auto`, macOS or another controller changes it. It installs no daemon, login item, saved profile or telemetry. Compatibility depends on the Mac’s AppleSMC keys; this is a personal tool, with no all-Mac acceptance claim.
 

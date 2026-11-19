@@ -3,23 +3,23 @@
   "project": "fanctl",
   "license": "GPL-2.0-only; upstream retained terms in THIRD_PARTY_NOTICES.md",
   "author": "codingEzio",
-  "scope": "Selected CLI source, documentation, original mark and non-privileged tests. No private workspace, credentials, helper, OS configuration or original Git history. Modified by fanctl contributors on 2026-11-07 to validate controller data, preflight targets, and attempt diagnosed, bounded best-effort automatic recovery. Modified on 2026-11-15 to wait for thermal-manager handoff, recognize system-controlled automatic mode, and show measured before/after RPM with bounded terminal progress, signal recovery and existing sudo-cache reuse without password storage. Modified to create the system cache through native sudo askpass and support strictly noninteractive authorization. Modified on 2026-11-19 to read status directly and make motor observation optional after verified control. Interactive terminals also show a width-aware per-fan tachometer.",
+  "scope": "Selected CLI source, documentation, original mark and non-privileged tests. No private workspace, credentials, helper, OS configuration or original Git history. The CLI reports measured RPM and verifies temporary control changes with bounded handoff and recovery.",
   "files": [
     {
       "path": "fanctl.c",
-      "sha256": "614cebdeb17f392bf3d7f34c7bd0c95c3f042210c2c3706ce8baed4df1755b73"
+      "sha256": "5a95833f1ea23278cd25ebb964a5fed70d561a2a99e622350bb142e57be78700"
     },
     {
       "path": "tests/fanctl_test.c",
-      "sha256": "cc3839cc56aa526f6e7cd2cbe4468a40a6c3c7da251007368ff2ac40780edece"
+      "sha256": "6543e9af9f7149ef07afdad59f76085ad0c4f9492328e5e4d3adb736a3ebc830"
     },
     {
       "path": "tests/fanctl_test.sh",
-      "sha256": "882aeba97cc444007c110f660e01e7c1c1447d7313e1adadcfb1c5d09490d1d3"
+      "sha256": "62e8bfa52466bf264f99a44665075c83c6732a1fc8b1de4d2ef22853f1373b19"
     },
     {
       "path": "tests/recovery_test.c",
-      "sha256": "777d3bf4bf6e9c18d11cd9eeef40d478503a34b06cc4c699452f1c049fcb6b78"
+      "sha256": "0e543f490b0fb84be11de11888dde83289e46b5220fa3f52fd34760481bcfa6b"
     },
     {
       "path": "tests/smc_result_test.c",
@@ -39,28 +39,36 @@
     },
     {
       "path": "README.md",
-      "sha256": "e35869532d28d6e7beaeee431dc55088444c6ad95502654893a940db6a9a2d2f"
+      "sha256": "f0cd61d8f4348b8965e076ddc4484333aca584eaba6189a3f12281bddc971b0e"
     },
     {
       "path": "README.zh-Hans.md",
-      "sha256": "c76a7d90ba711f0a272f73d2a2fd46a0c86718b48fddfc179152ca703b76aef1"
+      "sha256": "0e366a4e64181c6dbff9855570799b519aac2e43a2fb036c0ae571759f030f04"
     },
     {
       "path": "README.zh-Hant.md",
-      "sha256": "591a7aef0c2ddcda6b2235ed050b65b641e19d806a086d30e693020f969a844e"
+      "sha256": "8b9171342951b08a6268defee82825bc323aae8b3d9c50b68abb4bb673c3cdeb"
     },
     {
       "path": "README.ja.md",
-      "sha256": "50caff3395227e0b96cf78bdebf59aff58e53ee3766a216316f250ad7e46f8f4"
+      "sha256": "0c28dc187b41cfc0a71c4634dbd0dc4d011a4207a0b09f15c97890cdccd31f51"
     },
     {
       "path": "README.ko.md",
-      "sha256": "9b4d2febee8cc1b87bd587ea42c1b163221a79c958b1641e565d19e9fd02fe49"
+      "sha256": "8c620ce5f44d5710a8a40c1d5de8bda6062e4e37de64a6b2512d18121cea5471"
     },
     {
       "path": "README.es.md",
-      "sha256": "8d669b9beb5906fa4b2dc25e9b2627a5997ca4986a72c664c6b36e7e7c431d97"
+      "sha256": "cd220db411a7acfdf689c34e4507fbd3aef412a7b1cb0a74d3186a02d6b7dd86"
+    },
+    {
+      "path": "fan_jobs.h",
+      "sha256": "afa348775b3697ed5f3ce0d0cbf3fd4f80ac3539408e65f492c5611b0ccc1871"
+    },
+    {
+      "path": "tests/jobs_test.c",
+      "sha256": "7f030ce3117f6e38655fcc15837ad72484915e4d46ee6bd8e385f5b941a551cc"
     }
   ],
-  "runtime": "On one Mac, identical CLI source was tested with a temporary fan target and return to automatic mode. Recovery after a write failure was only simulated; other Macs are unverified. On 2026-11-19 the revised status path read both fans on one Mac without elevation. Changes, optional observation and recovery were exercised with a synthetic controller."
+  "runtime": "One Mac: terminal return from stopped fans, eventual controller confirmation, repeated manual targets, successive requests, local terminal use and passwordless loopback SSH were verified. Synthetic tests cover failure reporting and recovery. Other hardware is unverified."
 }

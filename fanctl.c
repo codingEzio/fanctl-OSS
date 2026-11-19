@@ -5,7 +5,7 @@
 // Modified by fanctl contributors on 2026-11-07: preflight, diagnostic and
 // best-effort automatic-mode recovery when a forced fan change fails.
 // Modified on 2026-11-15: wait for thermal-manager handoff and recognize system mode.
-// Modified on 2026-11-19: direct status reads and optional motor observation.
+// Modified on 2026-11-19: direct RPM reads, verified control changes and session-aware authorization.
 
 #include <CoreFoundation/CoreFoundation.h>
 #include <errno.h>
@@ -21,8 +21,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/ioctl.h>
-#include <sys/wait.h>
+#include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -86,11 +85,9 @@ enum {
     kSMCSuccess = 0,
     kSMCKeyNotFound = 132,
     kSMCWriteProtected = 130,
-    kTargetTolerance = 25,
     /* Thermal-manager handoff is asynchronous; use the researched 30s bound. */
     kModeAttempts = 120,
     kModePollMicroseconds = 250000,
-    kSpeedAttempts = 32, /* Observe motor response for at most eight seconds. */
 };
 
 typedef struct {
@@ -104,79 +101,19 @@ typedef struct {
 } ForceRecovery;
 static ForceRecovery force_recovery;
 static volatile sig_atomic_t interrupted;
-static bool terminal_output;
-static bool color_output;
-static bool progress_terminal;
-static int terminal_columns;
-static bool progress_visible;
-
-static void progress_clear(void) {
-    if (progress_visible) {
-        fputs("\r\033[2K", stderr);
-        fflush(stderr);
-        progress_visible = false;
-    }
-}
-
-static bool reduce_motion(void);
-
-static void progress_sample(const char *phase, const FanState *fan) {
-    if (!progress_terminal) return;
-    static const char *last_phase;
-    static bool still;
-    static struct timespec started;
-    struct timespec now = {0};
-    (void)clock_gettime(CLOCK_MONOTONIC, &now);
-    if (!last_phase) {
-        still = reduce_motion();
-        started = now;
-    }
-    if (still && last_phase && strcmp(last_phase, phase) == 0) return;
-    last_phase = phase;
-    double elapsed = difftime(now.tv_sec, started.tv_sec) +
-        (now.tv_nsec - started.tv_nsec) / 1e9;
-    static const char *rotor[] = {"◐", "◓", "◑", "◒"};
-    const char *mark = still ? "•" : rotor[now.tv_nsec / 250000000L];
-    fprintf(stderr, "\r\033[2K%s%s%s  %s", color_output ? "\033[33m" : "",
-        mark, color_output ? "\033[0m" : "", phase);
-    if (fan && !still && terminal_columns >= 56) {
-        fprintf(stderr, "  Fan %d  %.0f → %.0f RPM", fan->number + 1, fan->current, fan->target);
-    }
-    if (!still && elapsed >= 1) fprintf(stderr, "  %.0fs", elapsed);
-    fflush(stderr);
-    progress_visible = true;
-}
-
-static void progress_note(const char *phase) { progress_sample(phase, NULL); }
-
 static void handle_signal(int number) { interrupted = number; }
-
-static bool reduce_motion(void) {
-    const char *name = getenv("SUDO_USER");
-    CFStringRef user = name ? CFStringCreateWithCString(NULL, name, kCFStringEncodingUTF8) : NULL;
-    CFPropertyListRef value = CFPreferencesCopyValue(CFSTR("reduceMotion"),
-        CFSTR("com.apple.universalaccess"), user ? user : kCFPreferencesCurrentUser,
-        kCFPreferencesAnyHost);
-    bool enabled = value && CFGetTypeID(value) == CFBooleanGetTypeID() &&
-        CFBooleanGetValue((CFBooleanRef)value);
-    if (value) CFRelease(value);
-    if (user) CFRelease(user);
-    return enabled;
-}
 
 static bool restore_fans_best_effort(io_connect_t connection, int count,
     bool require_force_bits, bool require_test_mode);
 static void fail(const char *message) __attribute__((noreturn));
 
 static void fail(const char *message) {
-    progress_clear();
     fprintf(stderr, "fanctl: %s\n", message);
     if (force_recovery.armed && force_recovery.attempted) {
         force_recovery.armed = false;
         bool restored = restore_fans_best_effort(force_recovery.connection,
             force_recovery.count, force_recovery.touched_force_bits,
             force_recovery.touched_test_mode);
-        progress_clear();
         if (restored) {
             fputs("fanctl: automatic mode verified after the failed change\n", stderr);
         } else {
@@ -191,8 +128,7 @@ static void check_interrupted(void) {
     if (interrupted) fail("Cancelled");
 }
 
-/* Only an unprivileged, read-only status command may retry an IOKit denial.
-   All rows are buffered until the full sample succeeds, so a retry prints once. */
+/* The unprivileged preflight only reads. Permission failures can safely retry. */
 static int stat_argc;
 static char **stat_argv;
 static void run_elevated(int argc, char *argv[]) __attribute__((noreturn));
@@ -561,7 +497,6 @@ static bool restore_fans_best_effort(io_connect_t connection, int count,
                 !has_format(&value, "ui8 ", 1)) break;
             if (value.bytes[0] == 1) { acknowledged = true; break; }
             if (value.bytes[0] != 0) break;
-            progress_note("Restoring Auto");
             if (attempt + 1 < kModeAttempts) usleep(kModePollMicroseconds);
         }
         force_recovery.pending_test_mode = false;
@@ -590,7 +525,6 @@ static bool restore_fans_best_effort(io_connect_t connection, int count,
         }
         if (all_zero) { verified = true; break; }
         if (error || attempt == attempts) break;
-        progress_note("Returning to Auto");
         usleep(kModePollMicroseconds);
     }
     return success && verified;
@@ -717,8 +651,17 @@ static void set_optional_force_bits(io_connect_t connection, uint16_t bits, bool
     } else if (expected) fail("Previously detected global force key disappeared");
 }
 
+/* Subdivide the first quarter-second so an early confirmation can return
+   immediately. Afterwards keep the original cadence and total timeout. */
+static const useconds_t early_polls[] = {10000, 20000, 40000, 80000, 100000};
+enum { kExtraEarlyPolls = sizeof(early_polls) / sizeof(early_polls[0]) - 1 };
+
+static void poll_change(int attempt) {
+    usleep(attempt <= kExtraEarlyPolls ? early_polls[attempt] : kModePollMicroseconds);
+}
+
 static void set_manual_modes(io_connect_t connection, const FanState *fans, int count) {
-    int attempts = force_recovery.touched_test_mode ? kModeAttempts : 1;
+    int attempts = force_recovery.touched_test_mode ? kModeAttempts + kExtraEarlyPolls : 1;
     for (int attempt = 0; attempt < attempts; attempt++) {
         check_interrupted();
         bool all_manual = true;
@@ -736,8 +679,7 @@ static void set_manual_modes(io_connect_t connection, const FanState *fans, int 
             if (result != kSMCSuccess || readback.bytes[0] != 1) all_manual = false;
         }
         if (all_manual) return;
-        progress_note("Taking control");
-        if (attempt + 1 < attempts) usleep(kModePollMicroseconds);
+        if (attempt + 1 < attempts) poll_change(attempt);
     }
     fail(attempts > 1 ? "macOS did not release fan control within 30 seconds" :
         "Manual fan mode could not be verified");
@@ -772,111 +714,51 @@ static void restore_auto(io_connect_t connection) {
     }
 }
 
-static const char *mode_label(int mode) {
-    return mode == 0 || mode == 3 ? "Auto" : mode == 1 ? "Manual" : "Unknown";
-}
-
-/* Each tachometer spans zero to this fan's rated maximum. The number remains
-   legible on its own in a narrow terminal or a monochrome color scheme. */
-static void print_meter(float current, float maximum, int segments) {
-    if (segments == 0 || maximum <= 0) return;
-    int lit = (int)lroundf(fminf(current / maximum, 1) * segments);
-    for (int i = 0; i < segments; i++) {
-        if (color_output) {
-            if (i == lit) fputs("\033[0;2m", stdout);
-            else if (i < lit) {
-                if (i == 0) fputs("\033[33m", stdout);
-                else if (i == segments / 2) fputs("\033[38;5;208m", stdout);
-                else if (i == segments * 3 / 4) fputs("\033[31m", stdout);
-            }
-        }
-        fputs(i < lit ? "▰" : "·", stdout);
-    }
-    if (color_output) fputs("\033[0m", stdout);
-    fputs("  ", stdout);
-}
-
-static void print_terminal_fan(const FanState *fan, const FanState *before, bool maximum,
-    bool verbose) {
-    const char *bold = color_output ? "\033[1m" : "";
-    const char *reset = color_output ? "\033[0m" : "";
-    printf(terminal_columns < 32 ? "Fan %d " : "Fan %02d  ", fan->number + 1);
-    int segments = terminal_columns >= 72 ? 16 : terminal_columns >= 48 ? 8 : 0;
-    print_meter(fan->current, fan->maximum, segments);
-    printf("%s%5.0f%s RPM  %s\n", bold, fan->current, reset,
-        maximum ? "Max" : mode_label(fan->mode));
-    if (before) {
-        printf("        from %.0f RPM", before->current);
-        if (fan->mode == 1 && fabsf(fan->current - fan->target) > kTargetTolerance) {
-            printf("%starget %.0f", terminal_columns >= 48 ? "  ·  " : "\n        ", fan->target);
-        }
-        putchar('\n');
-    } else if (verbose) {
-        printf("        target %.0f%srange %.0f–%.0f%sraw mode %d\n",
-            fan->target, terminal_columns >= 48 ? "  ·  " : "\n        ", fan->minimum, fan->maximum,
-            terminal_columns >= 64 ? "  ·  " : "\n        ", fan->mode);
+static void print_rpm(const FanState *fans, int count) {
+    for (int i = 0; i < count; i++) {
+        printf("Fan %d  %.0f RPM\n", fans[i].number + 1, fans[i].current);
     }
 }
 
-static void print_status(io_connect_t connection, bool verbose) {
+static void print_status(io_connect_t connection) {
     FanState fans[10];
-    int count = all_fans(connection, fans);
-    if (verbose && !terminal_output) printf("Fans: %d\n", count);
-    for (int number = 0; number < count; number++) {
-        const FanState *fan = &fans[number];
-        if (terminal_output) {
-            print_terminal_fan(fan, NULL, false, verbose);
-        } else if (verbose) {
-            printf("Fan %d: %.0f RPM current, %.0f target, %.0f-%.0f allowed, %s (mode %d)\n",
-                fan->number + 1, fan->current, fan->target, fan->minimum, fan->maximum,
-                mode_label(fan->mode), fan->mode);
-        } else {
-            printf("Fan %d  %5.0f RPM  %s\n", fan->number + 1, fan->current, mode_label(fan->mode));
-        }
+    int count = fan_count(connection);
+    if (!count) fail("No fans detected");
+    for (int i = 0; i < count; i++) {
+        fans[i].number = i;
+        fans[i].current = fan_rpm(connection, i, "Ac");
     }
+    print_rpm(fans, count);
 }
 
-static void finish_change(io_connect_t connection, const FanState *before, int count,
-    bool automatic, bool maximum, int rpm, bool wait) {
-    FanState after[10];
-    for (int attempt = 0; attempt < kSpeedAttempts; attempt++) {
-        check_interrupted();
-        if (fan_count(connection) != count) fail("Fan count changed during control");
-        const FanState *unsettled = NULL;
-        for (int index = 0; index < count; index++) {
-            FanState *fan = &after[index];
-            fan->number = before[index].number;
-            fan->maximum = before[index].maximum;
-            fan->current = fan_rpm(connection, fan->number, "Ac");
-            fan->target = fan_rpm(connection, fan->number, "Tg");
-            fan->mode = fan_mode(connection, fan->number);
-            float target = automatic ? fan->target : maximum ? before[index].maximum : (float)rpm;
-            if (!automatic && (fan->mode != 1 || fabsf(fan->target - target) > kTargetTolerance)) {
+/* An exact manual target is already applied, even while the motor is moving. */
+static bool already_applied(const FanState *fans, int count, bool maximum, int rpm) {
+    for (int i = 0; i < count; i++) {
+        float target = maximum ? roundf(fans[i].maximum) : (float)rpm;
+        if (fans[i].mode != 1 || fans[i].target != target ||
+            target < fans[i].minimum || target > fans[i].maximum) return false;
+    }
+    return true;
+}
+
+static void finish_change(io_connect_t connection, FanState *fans, int count,
+    bool automatic, bool maximum, int rpm) {
+    if (fan_count(connection) != count) fail("Fan count changed during control");
+    for (int i = 0; i < count; i++) {
+        int mode = fan_mode(connection, i);
+        if (automatic) {
+            if (mode != 0 && mode != 3) fail("Automatic mode was lost");
+        } else {
+            float target = maximum ? roundf(fans[i].maximum) : (float)rpm;
+            if (mode != 1 || fan_rpm(connection, i, "Tg") != target) {
                 fail("macOS changed fan control before the command completed");
             }
-            if (automatic && fan->mode != 0 && fan->mode != 3) fail("Automatic mode was lost");
-            if (!unsettled && fabsf(fan->current - target) > kTargetTolerance) unsettled = fan;
         }
-        if (!wait || !unsettled || attempt + 1 == kSpeedAttempts) break;
-        progress_sample("Tracking RPM", unsettled);
-        usleep(kModePollMicroseconds);
+        fans[i].current = fan_rpm(connection, i, "Ac");
     }
     check_interrupted();
-    progress_clear();
     force_recovery.armed = false;
-    for (int index = 0; index < count; index++) {
-        const FanState *fan = &after[index];
-        if (terminal_output) {
-            print_terminal_fan(fan, &before[index], maximum, false);
-            continue;
-        }
-        printf("Fan %d  %5.0f -> %5.0f RPM%s", fan->number + 1, before[index].current,
-            fan->current, automatic ? "  Auto" : maximum ? "  Max" : "");
-        if (!automatic && fabsf(fan->current - fan->target) > kTargetTolerance) {
-            printf("  (target %.0f)", fan->target);
-        }
-        putchar('\n');
-    }
+    print_rpm(fans, count);
 }
 
 static int parse_rpm(const char *text) {
@@ -935,54 +817,30 @@ static void force_fans(io_connect_t connection, const FanState *fans, int count,
         check_interrupted();
         write_key(connection, &encoded[number]);
     }
-    for (int attempt = 0; attempt < 8; attempt++) {
+    const int attempts = 8 + kExtraEarlyPolls;
+    for (int attempt = 0; attempt < attempts; attempt++) {
         check_interrupted();
         bool reached = true;
         for (int number = 0; number < count; number++) {
             FanState current = read_fan(connection, fans[number].number);
-            if (current.mode != 1 || fabsf(current.target - (float)targets[number]) > kTargetTolerance) {
+            if (current.mode != 1 || current.target != (float)targets[number]) {
                 reached = false;
             }
         }
         if (reached) return;
-        progress_note("Applying RPM");
-        if (attempt + 1 < 8) usleep(kModePollMicroseconds);
+        if (attempt + 1 < attempts) poll_change(attempt);
     }
     fail("Fan target did not settle at the requested RPM");
 }
 
 static void usage(void) {
-    if (terminal_output) {
-        const char *accent = color_output ? "\033[1;33m" : "";
-        const char *bold = color_output ? "\033[1m" : "";
-        const char *reset = color_output ? "\033[0m" : "";
-        printf("%s◉  fanctl%s\n\n", accent, reset);
-        printf("  %sstat%s     Read fan speeds and modes\n", bold, reset);
-        printf("  %s<RPM>%s    Set all fans to this speed\n", bold, reset);
-        printf("  %smax%s      Use each fan’s maximum\n", bold, reset);
-        printf("  %sauto%s     Return control to macOS\n\n", bold, reset);
-        puts("  stat --verbose     Targets, ranges and raw modes\n"
-             "  --wait             Observe RPM for up to 8s after changes\n"
-             "  --non-interactive  Never prompt for a password\n"
-             "  --no-color         Disable color");
-        return;
-    }
-    puts("fanctl — macOS fan inspection and temporary control\n"
-         "\n"
-         "Usage:\n"
-         "  fanctl max [--wait]\n"
-         "  fanctl auto [--wait]\n"
-         "  fanctl <RPM> [--wait]\n"
-         "  fanctl stat [--verbose]\n"
-         "\n"
-         "Options:\n"
-         "  --wait             Observe measured RPM for up to 8s after confirmation\n"
-         "  --no-color         Disable color (also: NO_COLOR)\n"
-         "  --non-interactive  Never open a password prompt");
+    puts("Usage:\n"
+         "  fanctl stat    Read current RPM (also: fanctl)\n"
+         "  fanctl <RPM>   Set all fans\n"
+         "  fanctl max     Set each fan to its maximum\n"
+         "  fanctl auto    Return control to macOS");
 }
 
-// Standalone builds use system sudo. The managed owner build explicitly keeps
-// its adjacent native authorizer; no private home path is compiled by default.
 #ifndef FANCTL_USE_ADJACENT_AUTHORIZER
 #define FANCTL_USE_ADJACENT_AUTHORIZER 0
 #endif
@@ -990,151 +848,139 @@ static void usage(void) {
 #error "FANCTL_USE_ADJACENT_AUTHORIZER must be 0 or 1"
 #endif
 
+#define FANCTL_SYSTEM_TOOL "/Library/PrivilegedHelperTools/fanctl"
+static bool system_tool_installed(void) {
+    struct stat st;
+    return lstat(FANCTL_SYSTEM_TOOL, &st) == 0 && S_ISREG(st.st_mode) &&
+        st.st_uid == 0 && !(st.st_mode & 0022) && (st.st_mode & 0001);
+}
+
+/* A per-account receipt opts this client into detached, passwordless changes.
+   Sudo still enforces the rule for the independently installed root executable. */
+static bool passwordless_enabled(void) {
+    char path[PATH_MAX], resolved[PATH_MAX];
+    uint32_t size = sizeof(path);
+    if (_NSGetExecutablePath(path, &size) || !realpath(path, resolved) ||
+        strlcat(resolved, ".passwordless", sizeof(resolved)) >= sizeof(resolved)) return false;
+    FILE *receipt = fopen(resolved, "r");
+    if (!receipt) return false;
+    unsigned long uid;
+    bool enabled = fscanf(receipt, "%lu", &uid) == 1 && uid == getuid();
+    fclose(receipt);
+    return enabled && system_tool_installed();
+}
+
 #if FANCTL_USE_ADJACENT_AUTHORIZER
-/* Probe sudo's own cache without a prompt. Never keep a password in fanctl. */
-static bool cached_authorization(void) {
-    pid_t child = fork();
-    if (child < 0) fail("Cannot check cached administrator access");
-    if (child == 0) {
-        int sink = open("/dev/null", O_RDWR);
-        if (sink < 0 || dup2(sink, STDIN_FILENO) < 0 ||
-            dup2(sink, STDOUT_FILENO) < 0 || dup2(sink, STDERR_FILENO) < 0) _exit(127);
-        if (sink > STDERR_FILENO) close(sink);
-        char *arguments[] = {"/usr/bin/sudo", "-n", "-v", NULL};
-        execv(arguments[0], arguments);
-        _exit(127);
-    }
-    int status = 0;
-    pid_t result;
-    do { result = waitpid(child, &status, 0); } while (result < 0 && errno == EINTR);
-    if (result < 0) fail("Cannot read cached administrator access result");
-    return WIFEXITED(status) && WEXITSTATUS(status) == 0;
+static bool session_marker(const char *key) {
+    const char *value = getenv(key);
+    return value && *value;
 }
 #endif
 
 static void run_elevated(int argc, char *argv[]) {
-    bool noninteractive = false;
-    for (int index = 2; index < argc; index++) {
-        if (strcmp(argv[index], "--non-interactive") == 0) noninteractive = true;
-    }
-    char executable[PATH_MAX];
-    char resolved[PATH_MAX];
+    char executable[PATH_MAX], resolved[PATH_MAX];
     uint32_t size = sizeof(executable);
-    if (_NSGetExecutablePath(executable, &size) != 0 ||
-        realpath(executable, resolved) == NULL) {
+    if (_NSGetExecutablePath(executable, &size) != 0 || !realpath(executable, resolved)) {
         fail("Cannot resolve this executable for administrator access");
     }
+    char *command = argc == 1 ? "stat" : argv[1];
+    char numeric[16];
+    if (is_rpm_text(command)) {
+        snprintf(numeric, sizeof(numeric), "%d", parse_rpm(command));
+        command = numeric;
+    }
+    char *tool = strcmp(command, "stat") && system_tool_installed() ? FANCTL_SYSTEM_TOOL : resolved;
+    char *args[6] = {"/usr/bin/sudo"};
+    int next = 1;
+    int tty = open("/dev/tty", O_RDWR | O_NOCTTY);
+    if (tty < 0) {
+        args[next++] = "-n";
+    } else {
+        close(tty);
 #if FANCTL_USE_ADJACENT_AUTHORIZER
-    char authorizer[PATH_MAX];
-    const char *separator = strrchr(resolved, '/');
-    if (separator == NULL || snprintf(authorizer, sizeof(authorizer),
-        "%.*s/admin_authorize", (int)(separator - resolved), resolved) >= (int)sizeof(authorizer)) {
-        fail("Cannot locate the configured administrator helper");
-    }
-    bool cached = !noninteractive && cached_authorization();
-    const char *ssh_connection = getenv("SSH_CONNECTION");
-    const char *ssh_client = getenv("SSH_CLIENT");
-    bool incoming_ssh = (ssh_connection && ssh_connection[0]) || (ssh_client && ssh_client[0]);
-    bool askpass = !cached && !noninteractive && !incoming_ssh;
-    if (askpass && (setenv("SUDO_ASKPASS", authorizer, 1) != 0 ||
-        setenv("ADMIN_AUTHORIZE_ASKPASS_SCOPE", "fanctl", 1) != 0)) {
-        fail("Cannot configure native administrator authorization");
-    }
-    /* Askpass lets sudo create its normal credential timestamp. Executing
-       through the command helper would use -k and deliberately suppress it. */
-    const char *selected_authorizer = cached || noninteractive || askpass ?
-        "/usr/bin/sudo" : authorizer;
-#else
-    bool cached = false;
-    bool askpass = false;
-    const char *selected_authorizer = "/usr/bin/sudo";
+        bool local = !session_marker("SSH_CONNECTION") && !session_marker("SSH_CLIENT") &&
+            !session_marker("SSH_TTY") && !session_marker("TMUX") && !session_marker("STY");
+        if (local && isatty(STDIN_FILENO) && isatty(STDOUT_FILENO)) {
+            char *sep = strrchr(resolved, '/');
+            char helper[PATH_MAX];
+            if (!sep || snprintf(helper, sizeof(helper), "%.*s/fanctl_askpass",
+                (int)(sep - resolved), resolved) >= (int)sizeof(helper)) {
+                fail("Cannot locate the local password prompt");
+            }
+            if (access(helper, X_OK) == 0) {
+                if (setenv("SUDO_ASKPASS", helper, 1) != 0) fail("Cannot select local prompt");
+                args[next++] = "-A";
+            }
+        }
 #endif
-
-    char *authorize_args[argc + 4];
-    int next = 0;
-    authorize_args[next++] = (char *)selected_authorizer;
-    if (cached || noninteractive) authorize_args[next++] = "-n";
-    else if (askpass) authorize_args[next++] = "-A";
-    authorize_args[next++] = resolved;
-    bool has_no_color = false;
-    for (int index = 1; index < argc; index++) {
-        authorize_args[next++] = argv[index];
-        if (strcmp(argv[index], "--no-color") == 0) has_no_color = true;
     }
-    /* sudo can remove NO_COLOR from its environment; preserve the user's
-       presentation choice as a normal CLI flag across either authorizer. */
-    if (getenv("NO_COLOR") != NULL && !has_no_color) authorize_args[next++] = "--no-color";
-    authorize_args[next] = NULL;
-    execv(selected_authorizer, authorize_args);
+    args[next++] = "--";
+    args[next++] = tool;
+    args[next] = command;
+    execv(args[0], args);
     fail("Cannot request administrator access");
 }
 
-int main(int argc, char *argv[]) {
-    bool no_color = getenv("NO_COLOR") != NULL;
-    for (int index = 1; index < argc; index++) {
-        if (strcmp(argv[index], "--no-color") == 0) no_color = true;
-    }
-    const char *term = getenv("TERM");
-    terminal_output = isatty(STDOUT_FILENO) && (!term || strcmp(term, "dumb") != 0);
-    color_output = terminal_output && !no_color;
-    if (terminal_output) {
-        struct winsize size = {0};
-        terminal_columns = ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) == 0 && size.ws_col
-            ? size.ws_col : 80;
-    }
+#include "fan_jobs.h"
 
-    if (argc == 1 || strcmp(argv[1], "help") == 0 || strcmp(argv[1], "--help") == 0 ||
-        strcmp(argv[1], "-h") == 0) {
+int main(int argc, char *argv[]) {
+    if (argc == 2 && !strcmp(argv[1], "--apply-pending") && geteuid() != 0) {
+        struct stat directory, lock;
+        if (fstat(3,&directory) || !S_ISDIR(directory.st_mode) || directory.st_uid != getuid() ||
+            fstat(4,&lock) || !S_ISREG(lock.st_mode) || lock.st_uid != getuid()) return EXIT_FAILURE;
+        fcntl(3, F_SETFD, FD_CLOEXEC);
+        fcntl(4, F_SETFD, FD_CLOEXEC);
+        return work_jobs(3,4);
+    }
+    const char *command = argc == 1 ? "stat" : argv[1];
+    if (argc == 2 && (!strcmp(command, "help") || !strcmp(command, "--help") || !strcmp(command, "-h"))) {
         usage();
         return EXIT_SUCCESS;
     }
-
-    bool wait = false;
-    bool verbose = false;
-
-    const char *command = argv[1];
-    bool want_stat = strcmp(command, "stat") == 0;
-    bool want_max = strcmp(command, "max") == 0;
-    bool want_auto = strcmp(command, "auto") == 0;
-    bool want_set = is_rpm_text(command);
-    if (!(want_stat || want_max || want_auto || want_set)) {
+    bool stat = !strcmp(command, "stat");
+    bool maximum = !strcmp(command, "max");
+    bool automatic = !strcmp(command, "auto");
+    bool set = is_rpm_text(command);
+    if (argc > 2 || !(stat || maximum || automatic || set)) {
         usage();
         return EXIT_FAILURE;
     }
-    for (int index = 2; index < argc; index++) {
-        if (strcmp(argv[index], "--no-color") == 0) continue;
-        else if (!want_stat && strcmp(argv[index], "--wait") == 0) wait = true;
-        else if (want_stat && strcmp(argv[index], "--verbose") == 0) verbose = true;
-        else if (strcmp(argv[index], "--non-interactive") == 0) continue;
-        else { usage(); return EXIT_FAILURE; }
-    }
-
-    int rpm = want_set ? parse_rpm(command) : 0;
-    if (geteuid() != 0) {
-        if (!want_stat) run_elevated(argc, argv);
+    int rpm = set ? parse_rpm(command) : 0;
+    bool user = geteuid() != 0;
+    bool managed = user && passwordless_enabled();
+    if (user && automatic && !managed) run_elevated(argc, argv);
+    if (user) {
         stat_argc = argc;
         stat_argv = argv;
     }
-
-    progress_terminal = !want_stat && terminal_output && isatty(STDERR_FILENO);
-
     io_connect_t connection = open_smc();
-    if (want_stat) {
-        print_status(connection, verbose);
+    if (stat) {
+        print_status(connection);
+        IOServiceClose(connection);
+        return managed ? job_result() : EXIT_SUCCESS;
+    } else if (managed) {
+        submit_job(connection, command, maximum, automatic, rpm);
     } else {
-        struct sigaction action = {0};
-        action.sa_handler = handle_signal;
-        sigemptyset(&action.sa_mask);
-        if (sigaction(SIGINT, &action, NULL) != 0 || sigaction(SIGTERM, &action, NULL) != 0) {
-            fail("Cannot install cancellation handler");
-        }
         FanState fans[10];
         int count = all_fans(connection, fans);
-        if (want_set || want_max) force_fans(connection, fans, count, want_set, rpm);
-        else restore_auto(connection);
-        finish_change(connection, fans, count, want_auto, want_max, rpm, wait);
+        if (!automatic && already_applied(fans, count, maximum, rpm)) {
+            print_rpm(fans, count);
+        } else {
+            if (user) {
+                IOServiceClose(connection);
+                run_elevated(argc, argv);
+            }
+            struct sigaction action = {0};
+            action.sa_handler = handle_signal;
+            sigemptyset(&action.sa_mask);
+            if (sigaction(SIGINT, &action, NULL) || sigaction(SIGTERM, &action, NULL)) {
+                fail("Cannot install cancellation handler");
+            }
+            if (automatic) restore_auto(connection);
+            else force_fans(connection, fans, count, set, rpm);
+            finish_change(connection, fans, count, automatic, maximum, rpm);
+        }
     }
-
     IOServiceClose(connection);
     return EXIT_SUCCESS;
 }

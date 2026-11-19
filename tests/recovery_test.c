@@ -22,6 +22,7 @@ static int writes;
 static int mode0_metadata_reads;
 static int force_metadata_reads;
 static int sleeps;
+static unsigned slept_us;
 static bool injected;
 static bool pending_mode0;
 static bool pending_mode1;
@@ -30,7 +31,7 @@ static bool delay_first_mode_read;
 static bool target_before_handoff;
 static bool pending_test_enable;
 static _Noreturn void fake_exit(int status) { exit_status = status; longjmp(stopped, 1); }
-static int fake_sleep(useconds_t duration) { (void)duration; sleeps++; return 0; }
+static int fake_sleep(useconds_t duration) { slept_us += duration; sleeps++; return 0; }
 static kern_return_t fake_smc(io_connect_t, uint32_t, const void *, size_t, void *, size_t *);
 /* Run the real command parser and rendering against only the synthetic keys. */
 static kern_return_t fake_service(mach_port_t port, CFDictionaryRef matching,
@@ -301,16 +302,16 @@ int main(int argc, char **argv) {
         else if (is_case("invalid-mode") || is_case("invalid-actual")) (void)read_fan(0, 0);
         else {
             force_fans(0, fans, 2, !is_case("max-success"), is_case("rpm-overflow") ? 17000 : 2500);
-            if (is_case("fast-receipt") || is_case("wait-receipt") || is_case("lost-control")) {
+            if (is_case("fast-receipt") || is_case("lost-control")) {
                 if (is_case("lost-control")) keys[kMode1].bytes[0] = 3;
-                finish_change(0, fans, 2, false, false, 2500, is_case("wait-receipt"));
+                finish_change(0, fans, 2, false, false, 2500);
             }
         }
     }
     bool pass = false;
-    if (is_case("fast-receipt") || is_case("wait-receipt")) {
+    if (is_case("fast-receipt")) {
         pass = exit_status == 0 && !force_recovery.armed && state(1, 3, 1, 1) &&
-            sleeps == (is_case("wait-receipt") ? kSpeedAttempts - 1 : 0);
+            sleeps == 0;
     } else if (is_case("lost-control")) {
         pass = exit_status == EXIT_FAILURE && state(0, 0, 0, 3);
     } else if (is_case("success")) {
@@ -321,7 +322,7 @@ int main(int argc, char **argv) {
             keys[kTarget0].bytes[0] == 0x27 && keys[kTarget1].bytes[0] == 0x27;
     } else if (is_case("protected-timeout")) {
         pass = exit_status == EXIT_FAILURE && state(0, 0, 3, 0) &&
-            sleeps == kModeAttempts - 1 && !target_before_handoff;
+            slept_us == (kModeAttempts - 1) * kModePollMicroseconds && !target_before_handoff;
     } else if (is_case("mode-other-error")) {
         pass = exit_status == EXIT_FAILURE && state(0, 0, 3, 3) && sleeps == 0;
     } else if (is_case("auto-system")) {

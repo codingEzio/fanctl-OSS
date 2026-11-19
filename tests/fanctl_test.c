@@ -4,6 +4,8 @@
 #include <IOKit/IOKitLib.h>
 #include <mach-o/dyld.h>
 #include <errno.h>
+#include <fcntl.h>
+#include <sys/stat.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -20,46 +22,41 @@ static char *fake_realpath(const char *path, char *resolved) {
     strcpy(resolved, path);
     return resolved;
 }
-#if FANCTL_USE_ADJACENT_AUTHORIZER
-static pid_t fake_fork(void) {
-    if (getenv("FANCTL_TEST_CACHE_PROBE_ERROR")) { errno = EAGAIN; return -1; }
-    return 4242;
+static int fake_open_tty(const char *path, int flags, ...) {
+    (void)path;
+    return getenv("FANCTL_TEST_NO_TTY") ? -1 : open("/dev/null", flags);
 }
-static pid_t fake_waitpid(pid_t child, int *status, int options) {
-    (void)options;
-    *status = getenv("FANCTL_TEST_CACHED") ? 0 : 256;
-    return child;
+#if FANCTL_USE_ADJACENT_AUTHORIZER
+static int fake_isatty(int fd) { (void)fd; return 1; }
+#endif
+static int fake_lstat(const char *path, struct stat *st) {
+    (void)path;
+    if (!getenv("FANCTL_TEST_INSTALLED")) return -1;
+    *st = (struct stat){.st_mode = S_IFREG | 0755};
+    return 0;
+}
+#if FANCTL_USE_ADJACENT_AUTHORIZER
+static int fake_access(const char *path, int mode) {
+    return mode == X_OK && !strcmp(path, "/fixture/bin/fanctl_askpass") ? 0 : -1;
 }
 #endif
 static int fake_execv(const char *path, char *const arguments[]) {
     if (getenv("FANCTL_TEST_EXEC_FAIL")) { errno = ENOENT; return -1; }
     bool no_prompt = arguments[1] && strcmp(arguments[1], "-n") == 0;
     bool askpass = arguments[1] && strcmp(arguments[1], "-A") == 0;
-    int executable = no_prompt || askpass ? 2 : 1;
-    if (!arguments[0] || !arguments[executable] || !arguments[executable + 1] ||
-        strcmp(arguments[0], path) || strcmp(arguments[executable], "/fixture/bin/fanctl")) _Exit(81);
-    printf("authorize=%s executable=%s argument=%s", path, arguments[executable], arguments[executable + 1]);
-    for (int index = executable + 2; arguments[index]; index++) {
-        if (strcmp(arguments[index], "--no-color") && strcmp(arguments[index], "--non-interactive") &&
-            strcmp(arguments[index], "--wait") &&
-            (strcmp(arguments[executable + 1], "stat") || strcmp(arguments[index], "--verbose"))) _Exit(81);
-        printf(" %s", arguments[index]);
-    }
-    if (askpass && (!getenv("SUDO_ASKPASS") ||
-        strcmp(getenv("SUDO_ASKPASS"), "/fixture/bin/admin_authorize") ||
-        !getenv("ADMIN_AUTHORIZE_ASKPASS_SCOPE") ||
-        strcmp(getenv("ADMIN_AUTHORIZE_ASKPASS_SCOPE"), "fanctl"))) _Exit(81);
-    printf("%s\n", no_prompt ? " noninteractive=1" : askpass ? " askpass=1" : "");
+    int sep = no_prompt || askpass ? 2 : 1;
+    if (strcmp(arguments[sep], "--") || arguments[sep+3] || strcmp(path, "/usr/bin/sudo")) _Exit(81);
+    if (askpass && strcmp(getenv("SUDO_ASKPASS"), "/fixture/bin/fanctl_askpass")) _Exit(81);
+    printf("%s %s %s\n", no_prompt ? "no-prompt" : askpass ? "local" : "terminal",
+        arguments[sep+1], arguments[sep+2]);
     fflush(stdout);
     _Exit(0);
 }
-static bool testing_stat;
+
 static kern_return_t denied_status(mach_port_t port, CFDictionaryRef matching,
     io_iterator_t *iterator) {
     (void)port; (void)matching; (void)iterator;
-    if (testing_stat) return getenv("FANCTL_TEST_IO_ERROR") ? kIOReturnError : kIOReturnNotPrivileged;
-    fputs("SMC must not run during the authorization test\n", stderr);
-    _Exit(80);
+    return getenv("FANCTL_TEST_IO_ERROR") ? kIOReturnError : kIOReturnNotPrivileged;
 }
 #define main fanctl_command_main
 #define geteuid fake_geteuid
@@ -67,8 +64,12 @@ static kern_return_t denied_status(mach_port_t port, CFDictionaryRef matching,
 #define realpath fake_realpath
 #define execv fake_execv
 #if FANCTL_USE_ADJACENT_AUTHORIZER
-#define fork fake_fork
-#define waitpid fake_waitpid
+#define access fake_access
+#endif
+#define open fake_open_tty
+#define lstat fake_lstat
+#if FANCTL_USE_ADJACENT_AUTHORIZER
+#define isatty fake_isatty
 #endif
 #define IOServiceGetMatchingServices denied_status
 #ifndef FANCTL_SOURCE_INCLUDE
@@ -77,6 +78,5 @@ static kern_return_t denied_status(mach_port_t port, CFDictionaryRef matching,
 #include FANCTL_SOURCE_INCLUDE
 #undef main
 int main(int argc, char *argv[]) {
-    testing_stat = argc > 1 && strcmp(argv[1], "stat") == 0;
     return fanctl_command_main(argc, argv);
 }

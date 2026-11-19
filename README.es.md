@@ -16,16 +16,14 @@ fanctl max        # each fan's own maximum
 fanctl auto       # hand control back to macOS
 ```
 
-`3000`, `max` y `auto` muestran las RPM medidas de cada ventilador antes → después. `stat` muestra solo las RPM actuales y el modo; `stat --verbose` añade objetivos, rangos y valores de modo. Los ventiladores se numeran desde 1. El objetivo numérico debe estar dentro del rango de todos; `max` usa el máximo de cada uno.
+Ejecuta `fanctl` o `fanctl stat` para ver las RPM actuales de cada ventilador. La velocidad debe estar dentro del rango de todos los ventiladores. `max` usa el máximo de cada uno.
 
 ```text
-Fan 01  ▰▰▰▰▰···········   2000 RPM  Manual
-        from 2000 RPM  ·  target 2500
+Fan 1  2000 RPM
+Fan 2  2016 RPM
 ```
 
-La terminal interactiva muestra las RPM medidas en una barra de ámbar a rojo, a escala del máximo de cada ventilador. En terminales estrechas se mantienen las cifras y el modo. La salida redirigida es texto sin animación. `NO_COLOR` / `--no-color` desactiva el color; `TERM=dumb` desactiva los adornos. Reducir movimiento de macOS para el usuario conectado desactiva la animación. La CLI sigue en inglés. Para automatización, `--non-interactive` prohíbe pedir contraseña y falla si no hay autorización.
-
-La cesión de control se comprueba hasta 30 segundos, tratando todos los ventiladores juntos. Solo se reintenta la respuesta conocida de modo protegido (`0x82`); los demás errores de escritura siguen siendo fallos. El modo `3` es automático del sistema, no manual. Por defecto, se leen las RPM en cuanto se confirma el cambio. Con `--wait` se observan hasta ocho segundos; los valores finales son mediciones y un objetivo manual aún no alcanzado se indica aparte. Al recibir `SIGINT` / `SIGTERM` durante un cambio, intenta recuperar y verificar el modo automático antes de salir. La señal debe llegar a fanctl; detener solo el intermediario de autorización no es una vía de cancelación verificada.
+Con el acceso sin contraseña activado, fanctl muestra las RPM actuales y devuelve el control de inmediato. Un proceso temporal aplica y verifica el último ajuste solicitado. Un fallo se muestra en la siguiente consulta con `fanctl`. La transición puede tardar varios segundos si los ventiladores estaban parados. Sin esta configuración, el comando espera la confirmación.
 
 ## Compilar la fuente seleccionada
 
@@ -40,7 +38,7 @@ sh tests/fanctl_test.sh
 
 ## Permisos y estado
 
-`stat` lee con los permisos del usuario y solo solicita autorización si IOKit deniega el acceso. Cambiar la velocidad requiere permisos de administrador (con `/usr/bin/sudo` en la compilación independiente). La del propietario comprueba primero la caché de sudo sin pedir contraseña. Si sigue válida, usa sudo no interactivo; de lo contrario, las solicitudes locales usan `sudo -A` con el helper nativo adyacente como askpass para crear la caché normal. SSH entrante conserva el flujo de terminal del helper. No guarda contraseñas ni cambia la política de sudo. `--help` y los argumentos inválidos no piden acceso. La opción de compilación `FANCTL_USE_ADJACENT_AUTHORIZER` es `0` por defecto y `1` para el instalador del propietario; otros valores impiden compilar. Si falta el helper elegido, falla de forma visible sin cambiar de vía. La reutilización sigue la política de sesiones de sudo; otra terminal puede necesitar su propia autorización.
+La consulta y la repetición de un objetivo manual ya aplicado solo necesitan lectura. Los cambios usan sudo y reutilizan su autorización. La compilación gestionada admite una ventana de contraseña local. SSH usa su terminal. Sin terminal ni autorización, el comando termina de inmediato. Se puede autorizar el ejecutable de root en `/Library/PrivilegedHelperTools/fanctl` solo para valores numéricos, `auto` y `max`.
 
 Sale después de cada comando. El objetivo forzado sigue hasta que `auto`, macOS u otro controlador lo cambie. No instala daemon, inicio automático, perfiles guardados ni telemetría. La compatibilidad depende de las claves AppleSMC del Mac; no afirma aceptación en todos los modelos.
 
